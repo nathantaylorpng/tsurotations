@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tsurotations</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="boardWrap"><svg id="board"></svg></div>
+
+<div id="panel">
+  <div>
+    <h1>Tsurotations</h1>
+  </div>
+
+  <div class="card">
+    <h2>Setup</h2>
+    <div class="row">
+      <div><label>Board size</label><input id="boardSize" type="number" min="4" max="12" value="6"></div>
+      <div><label>Players</label><input id="numPlayers" type="number" min="2" max="8" value="2"></div>
+    </div>
+    <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
+      <label class="toggle"><input type="checkbox" id="vWrap"> Torus wrap</label>
+      <label class="toggle"><input type="checkbox" id="vRotatePass"> Rotate after crossing</label>
+    </div>
+    <button id="newGameBtn" style="margin-top: 10px; width: 100%;">New Game</button>
+  </div>
+
+  <div class="card">
+    <h2>Multiplayer</h2>
+    <div class="row">
+      <button id="hostBtn">Host game</button>
+      <input id="joinId" placeholder="Host code" aria-label="Host code">
+      <button id="joinBtn" class="secondary">Join</button>
+    </div>
+    <div id="networkStatus" class="networkStatus">Local game</div>
+    <div id="hostCode" class="hostCode"></div>
+  </div>
+
+  <div class="card">
+    <h2>Turn</h2>
+    <div id="turnBanner">—</div>
+    <div style="margin-top: 10px;">
+      <label>Your hand — click to select, then Rotate / Place</label>
+      <div id="hand"></div>
+    </div>
+    <div class="row" style="margin-top: 10px;">
+      <button id="rotateBtn" class="secondary">Rotate ↻</button>
+      <button id="placeBtn">Place tile</button>
+    </div>
+  </div>
+
+  <div class="card" id="bonusCard" style="display: none;">
+    <h2>Bonus: rotate a tile you passed through</h2>
+    <div id="bonusTiles" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+    <div class="row" style="margin-top: 10px;">
+      <button id="bonusRotateBtn" class="secondary">Rotate ↻</button>
+      <button id="bonusConfirmBtn">Confirm</button>
+      <button id="bonusSkipBtn" class="secondary">Skip</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Players</h2>
+    <div id="players"></div>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="game.js" defer></script>
+</body>
+</html>

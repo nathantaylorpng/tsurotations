@@ -1,0 +1,52 @@
+:root{
+    --bg:#14171c; --panel:#1c2028; --panel2:#242934; --line:#3a4150;
+    --text:#e8ebf0; --muted:#8b93a3; --accent:#5fb4ff; --danger:#ff6b6b; --good:#5fd48a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+    background:var(--bg); color:var(--text); display:flex; min-height:100vh;
+  }
+  #boardWrap{flex:1; display:flex; align-items:center; justify-content:center; padding:24px;}
+  #board{display:block; background:var(--bg);}
+  #panel{
+    width:340px; background:var(--panel); border-left:1px solid var(--line);
+    padding:20px; display:flex; flex-direction:column; gap:18px; overflow-y:auto;
+  }
+  h1{font-size:16px; margin:0 0 4px; letter-spacing:.02em;}
+  h2{font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 8px;}
+  .card{background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:12px;}
+  label{font-size:13px; color:var(--muted); display:block; margin-bottom:4px;}
+  input[type=number]{
+    width:60px; background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:4px; padding:4px 6px;
+  }
+  .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+  .toggle{display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text); cursor:pointer;}
+  button{
+    background:var(--accent); color:#0a1420; border:none; border-radius:6px;
+    padding:8px 12px; font-weight:600; cursor:pointer; font-size:13px;
+  }
+  button.secondary{background:var(--panel2); color:var(--text); border:1px solid var(--line);}
+  button:disabled{opacity:.4; cursor:not-allowed;}
+  #players{display:flex; flex-direction:column; gap:6px;}
+  .playerRow{display:flex; align-items:center; gap:8px; font-size:13px; padding:6px 8px; border-left:3px solid transparent; border-radius:4px;}
+  .playerRow.active{background:rgba(95,180,255,.12); border-left-color:var(--accent); color:var(--text); font-weight:600;}
+  .playerRow.you .playerName{color:var(--accent);}
+  .playerBadge{margin-left:auto; color:var(--accent); font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em;}
+  .swatch{width:12px; height:12px; border-radius:50%; flex-shrink:0;}
+  .dead{opacity:.35; text-decoration:line-through;}
+  #hand{display:flex; gap:8px;}
+  .tileBtn{
+    background:var(--bg); border:2px solid var(--line); border-radius:6px; padding:2px;
+    cursor:pointer;
+  }
+  .tileBtn.selected{border-color:var(--accent);}
+  #log{
+    font-size:12px; color:var(--muted); max-height:140px; overflow-y:auto;
+    display:flex; flex-direction:column-reverse; gap:2px;
+  }
+  #turnBanner{font-size:14px; font-weight:600;}
+  .networkStatus,.hostCode{font-size:12px; color:var(--muted); margin-top:8px; overflow-wrap:anywhere;}
+  #joinId{min-width:0; flex:1; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:8px 6px;}
+  svg text{user-select:none;}
