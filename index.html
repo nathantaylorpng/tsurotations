@@ -22,7 +22,7 @@
     </div>
     <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
       <label class="toggle"><input type="checkbox" id="vWrap"> Torus wrap</label>
-      <label class="toggle"><input type="checkbox" id="vRotatePass"> Rotate after crossing</label>
+      <label class="toggle"><input type="checkbox" id="vRotatePass" checked> Rotate after crossing</label>
     </div>
     <button id="newGameBtn" style="margin-top: 10px; width: 100%;">New Game</button>
   </div>
@@ -46,7 +46,8 @@
       <div id="hand"></div>
     </div>
     <div class="row" style="margin-top: 10px;">
-      <button id="rotateBtn" class="secondary">Rotate ↻</button>
+      <button id="rotateBtnLeft" class="secondary">Rotate ↺</button>
+      <button id="rotateBtnRight" class="secondary">Rotate ↻</button>
       <button id="placeBtn">Place tile</button>
     </div>
   </div>
@@ -55,7 +56,8 @@
     <h2>Bonus: rotate a tile you passed through</h2>
     <div id="bonusTiles" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
     <div class="row" style="margin-top: 10px;">
-      <button id="bonusRotateBtn" class="secondary">Rotate ↻</button>
+      <button id="bonusRotateBtnLeft" class="secondary">Rotate ↺</button>
+      <button id="bonusRotateBtnRight" class="secondary">Rotate ↻</button>
       <button id="bonusConfirmBtn">Confirm</button>
       <button id="bonusSkipBtn" class="secondary">Skip</button>
     </div>
