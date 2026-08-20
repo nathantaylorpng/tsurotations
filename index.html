@@ -7,9 +7,17 @@
 </head>
 <body>
 
-<div id="boardWrap" class="gameSurface" hidden><svg id="board"></svg></div>
+<div id="boardWrap" class="gameSurface" hidden>
+  <svg id="board"></svg>
+  <div id="bonusControls" hidden>
+    <button id="bonusRotateBtnLeft" class="secondary" title="Rotate counter-clockwise" aria-label="Rotate counter-clockwise">↺</button>
+    <button id="bonusRotateBtnRight" class="secondary" title="Rotate clockwise" aria-label="Rotate clockwise">↻</button>
+    <button id="bonusSkipBtn" class="secondary" title="Skip all rotations" aria-label="Skip all rotations">×</button>
+    <button id="bonusConfirmBtn" title="Confirm" aria-label="Confirm">✓</button>
+  </div>
+</div>
 
-<div id="panel">
+<div id="gameMenu">
   <div class="rowContainer">
     <h1>Tsurotations</h1>
     <div class="dropdown">
@@ -30,17 +38,23 @@
       <div><label>Board size</label><input id="boardSize" type="number" min="4" max="12" value="6"></div>
       <div><label>Players</label><input id="numPlayers" type="number" min="2" max="8" value="2"></div>
     </div>
-    <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
-      <label class="toggle"><input type="checkbox" id="vWrap"> Torus wrap</label>
-      <label class="toggle"><input type="checkbox" id="vRotatePass" checked> Rotate after crossing</label>
-      <label class="toggle"><input type="checkbox" id="vOnePerCell" checked> Can't start on the same tile as another player</label>
-      <label class="toggle"><input type="checkbox" id="vNoNeighbors"> Can't start next to another player</label>
+    <div class="checkbox-wrapper" style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
+      <input class="substituted" type="checkbox" id="vWrap">
+      <label for="vWrap"> Torus wrap</label>
+      <input class="substituted" type="checkbox" id="vRotatePass" checked>
+      <label for="vRotatePass"> Rotations</label>
+      <input class="substituted" type="checkbox" id="vReplacements">
+      <label for="vReplacements"> Replacements</label>
+      <input class="substituted" type="checkbox" id="vOnePerCell" checked>
+      <label for="vOnePerCell"> One player per cell (start)</label>
+      <input class="substituted" type="checkbox" id="vNoNeighbors">
+      <label for="vNoNeighbors"> No neighbors (start)</label>
     </div>
     <button id="newGameBtn" style="margin-top: 10px; width: 100%;">New Game</button>
 
     <br><br>
 
-    <h2>Multiplayer</h2>
+    <h2 id="multiplayerMenuLabel">Multiplayer</h2>
     <div class="row">
       <button id="hostBtn">Host game</button>
       <input id="joinId" placeholder="Host code" aria-label="Host code">
@@ -48,32 +62,14 @@
       <button id="disconnectBtn" class="secondary" hidden>Disconnect</button>
     </div>
     <div id="networkStatus" class="networkStatus">Local game</div>
-    <div id="hostCode" class="hostCode"></div>
-  </div>
-
-  <div class="card gameSurface" hidden>
-    <h2>Turn</h2>
-    <div id="turnBanner">—</div>
-    <div style="margin-top: 10px;">
-      <label>Your hand — click to select, then Rotate / Place</label>
-      <div id="hand"></div>
+    <div id="hostCodePanel" class="hostCodePanel hidden" aria-live="polite">
+      <div id="hostCodeLabel" class="hostCodeLabel"></div>
+      <div class="hostCodeRow">
+        <div id="hostCode" class="hostCode"></div>
+        <button id="copyBtn" class="copyBtn hidden" onclick="copyGameId()" aria-label="Copy host code" title="Copy host code"><i data-lucide="copy"></i></button>
+      </div>
     </div>
-    <div class="row" style="margin-top: 10px;">
-      <button id="rotateBtnLeft" class="secondary">Rotate ↺</button>
-      <button id="rotateBtnRight" class="secondary">Rotate ↻</button>
-      <button id="placeBtn">Place tile</button>
-    </div>
-  </div>
-
-  <div class="card gameSurface" id="bonusCard" style="display: none;" hidden>
-    <h2>Bonus: rotate a tile you passed through</h2>
-    <div id="bonusTiles" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
-    <div class="row" style="margin-top: 10px;">
-      <button id="bonusRotateBtnLeft" class="secondary">Rotate ↺</button>
-      <button id="bonusRotateBtnRight" class="secondary">Rotate ↻</button>
-      <button id="bonusConfirmBtn">Confirm</button>
-      <button id="bonusSkipBtn" class="secondary">Skip</button>
-    </div>
+    <div id="toast" class="toast">Copied!</div>
   </div>
 
   <div class="card gameSurface" hidden>
@@ -84,6 +80,30 @@
   <div class="card gameSurface" style="display: none;" hidden>
     <h2>Log</h2>
     <div id="log"></div>
+  </div>
+</div>
+
+<div id="tileMenu">
+  <div class="card gameSurface" hidden>
+    <h2>Turn</h2>
+    <div id="turnBanner">—</div>
+    <div style="margin-top: 10px;">
+      <div id="hand"></div>
+    </div>
+    <div class="row" style="margin-top: 10px;">
+      <button id="rotateBtnLeft" class="secondary">Rotate ↺</button>
+      <button id="rotateBtnRight" class="secondary">Rotate ↻</button>
+      <button id="placeBtn">Place tile</button>
+      <button id="replaceBtn" hidden>Replace Tile</button>
+      <button id="confirmReplaceBtn" class="secondary" hidden>Confirm</button>
+    </div>
+  </div>
+
+  <br>
+
+  <div class="card gameSurface" hidden>
+    <h2>Selected variants</h2>
+    <ul id="activeVariants"></ul>
   </div>
 </div>
 

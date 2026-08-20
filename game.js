@@ -295,30 +295,57 @@ const AvoidFatalPlayVariant = {
 const RotateOnPassThroughVariant = {
     name: 'rotate-on-passthrough',
     /**
-     * Pauses resolution when the acting token leaves a tile and offers a bonus rotation choice.
+     * Pauses resolution when the acting token leaves a tile and offers a rotation choice.
      *
      * @param {object} state - Active game state.
      * @param {object} token - Token that crossed the cell boundary.
      * @param {{x:number, y:number}} cell - Cell that the token is leaving.
      */
     onTileCrossed(state, token, cell) {
-        if (token.id !== state.lastActingPlayerId) return; // only the human mover gets the choice
+        if (token.id !== state.lastActingPlayerId) return; // only the active player gets the choice
         const resolution = state.activeResolution;
         const cellKey = cell.x + ',' + cell.y;
         const crossedCells = resolution?.crossedCells.get(token.id);
         const start = resolution?.startAnchors.get(token.id);
         const isStartingCell = start && start.x === cell.x && start.y === cell.y;
-        // Leaving the cell the token started this resolution on normally
-        // doesn't count as an "enter and exit" — they were already
-        // standing there from a previous turn, they didn't just arrive.
-        // Exception: if this cell is the one that got placed by this very
-        // turn's move, the token entered it for the first time ever just
-        // now (e.g. stepping onto the board off the perimeter), so leaving
-        // it immediately is a genuine enter-then-exit.
         const newlyPlaced = resolution?.newlyPlacedCell;
         const isFreshlyEntered = newlyPlaced && newlyPlaced.x === cell.x && newlyPlaced.y === cell.y;
         if (isStartingCell && !isFreshlyEntered && !crossedCells.has(cellKey)) return;
-        state.pendingBonusAction = { type: 'rotate-passthrough', cell, playerId: state.lastActingPlayerId };
+        state.pendingBonusAction = {
+            ...state.pendingBonusAction,
+            type: 'rotate-passthrough',
+            cell,
+            playerId: state.lastActingPlayerId,
+            rotationPending: true,
+        };
+    }
+};
+
+const replacementsVariant = {
+    name: 'replacements',
+    /**
+     * Pauses resolution when the acting token leaves a tile and offers a replacement choice
+     * 
+     * @param {object} state - Active game state
+     * @param {object} token - Token that crossed the cell boundary
+     * @param {x:number, y:number} cell - Cell that the token is leaving
+     */
+    onTileCrossed(state, token, cell) {
+        if (token.id !== state.lastActingPlayerId) return; // only the active player gets the choice
+        const resolution = state.activeResolution;
+        const cellKey = cell.x + ',' + cell.y;
+        const start = resolution?.startAnchors.get(token.id);
+        const isStartingCell = start && start.x === cell.x && start.y === cell.y;
+        const newlyPlaced = resolution?.newlyPlacedCell;
+        const isFreshlyEntered = newlyPlaced && newlyPlaced.x === cell.x && newlyPlaced.y === cell.y;
+        if (isStartingCell && !isFreshlyEntered && !crossedCells?.has(cellKey)) return;
+        state.pendingBonusAction = {
+            ...state.pendingBonusAction,
+            type: 'replace-passthrough',
+            cell,
+            playerId: state.lastActingPlayerId,
+            replacementPending: true,
+        };
     }
 };
 
@@ -341,11 +368,12 @@ function variantsFromIds(ids) {
     const available = {
         'torus-wrap': TorusWrapVariant,
         'rotate-on-passthrough': RotateOnPassThroughVariant,
+        'replacements': replacementsVariant,
         'one-player-per-cell': OnePerCellVariant,
-        'avoid-fatal-play': AvoidFatalPlayVariant,
+        'no-neighbors': NoNeighborsVariant,
     };
     const variants = (ids || []).map(id => available[id]).filter(Boolean);
-    if (!variants.includes(AvoidFatalPlayVariant)) variants.push(AvoidFatalPlayVariant);
+    //if (!variants.includes(AvoidFatalPlayVariant)) variants.push(AvoidFatalPlayVariant);
     return variants;
 }
 
@@ -394,9 +422,7 @@ function buildPerimeter(width, height) {
  */
 function newGame(opts) {
     const { size, numPlayers, variants } = opts;
-    const activeVariants = variants.includes(AvoidFatalPlayVariant)
-        ? variants
-        : [...variants, AvoidFatalPlayVariant];
+    const activeVariants = variants;
     const boardConfig = { wrap: false };
     for (const v of activeVariants) v.modifyBoardConfig?.(boardConfig);
 
@@ -474,19 +500,40 @@ function drawHand(state, playerId) {
 function log(state, msg) { state.log.push(msg); }
 
 /**
+ * Returns the off-board coordinate reached when leaving a tile through a point.
+ *
+ * @param {number} x - Tile column.
+ * @param {number} y - Tile row.
+ * @param {number} point - Exit point on the tile.
+ * @returns {{x:number, y:number}} The coordinate just outside the board.
+ */
+function outsideBoardPosition(x, y, point) {
+    const side = Math.floor(point / 2);
+    if (side === 0) return { x, y: y - 1 };
+    if (side === 1) return { x: x + 1, y };
+    if (side === 2) return { x, y: y + 1 };
+    return { x: x - 1, y };
+}
+
+/**
  * Applies a movement outcome to a token and triggers relevant elimination hooks.
  *
  * @param {object} state - Current game state.
  * @param {object} token - Token whose result is being applied.
- * @param {{status:string, x?:number, y?:number, point?:number}} result - Movement result metadata.
+ * @param {{status:string, x?:number, y?:number, point?:number, renderPosition?:{x:number, y:number, point:number}}} result - Movement result metadata.
  */
 function applyResult(state, token, result) {
     if (result.status === 'waiting') { // || result.status === 'looped') {
         token.x = result.x; token.y = result.y; token.point = result.point;
         //if (result.status === 'looped') log(state, `${token.name} looped back on itself and holds position.`);
     } else if (result.status === 'eliminated') {
-        token.x = result.x; token.y = result.y; token.point = result.point;
-        token.deathPosition = { x: result.x, y: result.y, point: result.point };
+        const renderPosition = result.renderPosition || { x: result.x, y: result.y, point: result.point };
+        const outsidePosition = outsideBoardPosition(result.x, result.y, result.point);
+        token.x = outsidePosition.x;
+        token.y = outsidePosition.y;
+        token.point = result.point;
+        token.deathPosition = { ...outsidePosition, point: result.point };
+        token.deathRenderPosition = renderPosition;
         token.alive = false;
         log(state, `${token.name} fell off the edge and is eliminated.`);
         for (const v of state.variants) v.onEliminate?.(state, token);
@@ -614,12 +661,14 @@ function cloneStateForPlacementCheck(state) {
         players: state.players.map(player => ({
             ...player,
             deathPosition: player.deathPosition ? { ...player.deathPosition } : player.deathPosition,
+            deathRenderPosition: player.deathRenderPosition ? { ...player.deathRenderPosition } : player.deathRenderPosition,
         })),
         npcs: state.npcs.map(npc => ({ ...npc })),
         hands: Object.fromEntries(Object.entries(state.hands).map(([id, hand]) => [id, hand.slice()])),
         tileDrawPile: state.tileDrawPile.slice(),
         log: state.log.slice(),
-        variants: state.variants.filter(variant => variant !== AvoidFatalPlayVariant),
+        variants: state.variants,
+        //variants: state.variants.filter(variant => variant !== AvoidFatalPlayVariant),
         activeResolution: null,
         pendingBonusAction: null,
     };
@@ -713,8 +762,9 @@ function advanceResolution(state) {
         const cell = state.board.getCell(cur.x, cur.y); // always real, except a token that has never entered a tile
 
         if (!cell) {
-            const entryCell = !state.board.inBounds(cur.x, cur.y)
-                && cur.token.entryX !== null && cur.token.entryX !== undefined
+            // Wrapped boards report every coordinate as in-bounds, including
+            // the exterior coordinate used by a token waiting to enter.
+            const entryCell = cur.token.entryX !== null && cur.token.entryX !== undefined
                 ? { x: cur.token.entryX, y: cur.token.entryY }
                 : null;
             if (entryCell && state.board.getCell(entryCell.x, entryCell.y)) {
@@ -742,24 +792,9 @@ function advanceResolution(state) {
         const p = exitPoint % 2;
         let nb = getNeighboringCell(state, cur, cell);
 
-        // No neighboring tile means the token is dead. Give variants the same
-        // chance to react as when the token crosses into an existing tile so
-        // an entered-then-exited final tile can still offer its rotation.
+        // No neighboring tile means the token is dead. It has not crossed into
+        // another tile, so do not offer the pass-through bonus here.
         if (!nb) {
-            const leftCell = { x: cur.x, y: cur.y };
-            const crossedCells = res.crossedCells.get(cur.token.id);
-            const cellKey = cur.x + ',' + cur.y;
-            if (!crossedCells.has(cellKey)) {
-                for (const v of state.variants) v.onTileCrossed?.(state, cur.token, leftCell);
-                crossedCells.add(cellKey);
-                if (state.pendingBonusAction) {
-                    cur.token.x = cur.x;
-                    cur.token.y = cur.y;
-                    cur.token.point = cur.point;
-                    res.onStep?.();
-                    return;
-                }
-            }
             applyResult(state, cur.token, {
                 status: 'eliminated', x: cur.x, y: cur.y, point: exitPoint,
             });
@@ -786,13 +821,18 @@ function advanceResolution(state) {
         cur.point = nb.side * 2 + (1 - p);
 
         for (const v of state.variants) v.onTileCrossed?.(state, cur.token, leftCell);
-        res.crossedCells.get(cur.token.id).add(leftCell.x + ',' + leftCell.y);
+        let crossedCells = res.crossedCells.get(cur.token.id);
+        if (!crossedCells) {
+            crossedCells = new Set();
+            res.crossedCells.set(cur.token.id, crossedCells);
+        }
+        crossedCells.add(leftCell.x + ',' + leftCell.y);
         if (state.pendingBonusAction) {
             cur.token.x = cur.x;
             cur.token.y = cur.y;
             cur.token.point = cur.point;
             res.onStep?.();
-            return; // pause — UI shows the bonus panel, resumes us later
+            return;
         }
         res.onStep?.(); // token has genuinely moved to a new tile — broadcast this step before looking ahead further
     }
@@ -826,8 +866,68 @@ function resolveBonusRotate(state, x, y, rotationSteps) {
         const player = state.players.find(p => p.id === state.lastActingPlayerId);
         log(state, `${player.name} rotated the tile at (${x},${y}).`);
     }
+    const pending = state.pendingBonusAction;
+    if (pending) pending.rotationPending = false;
+    if (pending?.replacementPending) return;
     state.pendingBonusAction = null;
     advanceResolution(state); // resume exactly where the chain left off
+}
+
+/**
+ * Replaces a crossed tile with a tile from the acting player's hand.
+ *
+ * @param {object} state - Current game state.
+ * @param {number} x - X coordinate of the tile to replace.
+ * @param {number} y - Y coordinate of the tile to replace.
+ * @param {object} tileDef - Replacement tile definition.
+ * @param {number} rotation - Replacement tile rotation.
+ */
+function resolveBonusReplace(state, x, y, tileDef, rotation) {
+    const cell = state.board.getCell(x, y);
+    const player = state.players.find(p => p.id === state.lastActingPlayerId);
+    const hand = player && state.hands[player.id];
+    if (!cell || !player || !hand) return false;
+
+    const handIndex = hand.findIndex(tile => tile.id === tileDef.id);
+    if (handIndex < 0) return false;
+
+    const oldTile = tileDefinition(cell.tileId);
+    const replacementPaths = rotateTilePaths(tileDef.paths, rotation);
+    for (const token of [...state.players, ...state.npcs]) {
+        if (!token.alive || token.x !== x || token.y !== y) continue;
+        const exitPoint = tileExit(cell.paths, token.point);
+        const replacementEntry = replacementPaths
+            .flat()
+            .find(point => tileExit(replacementPaths, point) === exitPoint);
+        if (replacementEntry !== undefined) token.point = replacementEntry;
+    }
+    hand.splice(handIndex, 1);
+    if (oldTile) hand.push(oldTile);
+    cell.paths = replacementPaths;
+    cell.rotation = rotation;
+    cell.tileId = tileDef.id;
+    log(state, `${player.name} replaced the tile at (${x},${y}).`);
+
+    const current = state.activeResolution?.current;
+    for (const token of [...state.players, ...state.npcs]) {
+        if (!token.alive || token.x !== x || token.y !== y || current?.token === token) continue;
+        if (!state.activeResolution.remaining.includes(token)) {
+            state.activeResolution.remaining.push(token);
+            state.activeResolution.crossedCells.set(token.id, new Set());
+            state.activeResolution.startAnchors.set(token.id, { x, y });
+        }
+    }
+
+    return true;
+}
+
+function confirmReplacementBonus(state) {
+    const pending = state.pendingBonusAction;
+    if (!pending?.replacementPending) return;
+    pending.replacementPending = false;
+    if (pending.rotationPending) return;
+    state.pendingBonusAction = null;
+    advanceResolution(state);
 }
 
 /**
@@ -843,21 +943,39 @@ function rotateCell(state, x, y, rotationSteps) {
     const steps = ((rotationSteps % 4) + 4) % 4;
     if (!cell || steps === 0) return;
 
+    const current = state.activeResolution?.current;
+    const previousPaths = cell.paths;
     cell.paths = rotateTilePaths(cell.paths, steps);
     cell.rotation = (cell.rotation + steps) % 4;
     const shift = (2 * steps) % TOTAL_POINTS;
     for (const token of [...state.players, ...state.npcs]) {
         if (token.alive && token.x === x && token.y === y) {
+            const previousExitPoint = tileExit(previousPaths, token.point);
             token.point = (token.point + shift) % TOTAL_POINTS;
             let nb = getNeighboringCell(state, token, cell);
             const exitPoint = tileExit(cell.paths, token.point);
-            if (!nb) applyResult(state, token, { status: 'eliminated', x: token.x, y: token.y, point: exitPoint });
+            if (!nb) {
+                applyResult(state, token, {
+                    status: 'eliminated',
+                    x: token.x,
+                    y: token.y,
+                    point: exitPoint,
+                    renderPosition: { x, y, point: previousExitPoint },
+                });
+                if (current?.token === token) state.activeResolution.current = null;
+            } else if (state.activeResolution && current?.token !== token
+                && !state.activeResolution.remaining.includes(token)) {
+                state.activeResolution.remaining.push(token);
+                state.activeResolution.crossedCells.set(token.id, new Set());
+                state.activeResolution.startAnchors.set(token.id, { x, y });
+            }
         }
     }
 
-    const current = state.activeResolution?.current;
-    if (current && current.x === x && current.y === y) {
+    if (state.activeResolution?.current === current
+        && current?.token && current.x === x && current.y === y) {
         current.point = (current.point + shift) % TOTAL_POINTS;
+        current.token.point = current.point;
     }
 }
 
@@ -867,6 +985,9 @@ function rotateCell(state, x, y, rotationSteps) {
  * @param {object} state - Current game state.
  */
 function skipBonus(state) {
+    const pending = state.pendingBonusAction;
+    if (pending?.rotationPending) pending.rotationPending = false;
+    if (pending?.replacementPending) return;
     state.pendingBonusAction = null;
     advanceResolution(state);
 }
@@ -901,10 +1022,13 @@ let localPlayerId = 'p0';
 let snapshotVersion = 0;
 
 const svg = document.getElementById('board');
-const CELL = 64;
-const BOARD_FRAME = 24;
-const DEAD_TOKEN_OFFSET = 8;
+const boardWrap = document.getElementById('boardWrap');
+const BASE_CELL_SIZE = 64;
+const BASE_BOARD_FRAME = 17;
+let renderedCellSize = BASE_CELL_SIZE;
 const PLAYER_NAME_STORAGE_KEY = 'tsurotations.playerName';
+const VARIANT_CHECKBOX_IDS = ['vWrap', 'vRotatePass', 'vReplacements', 'vOnePerCell', 'vNoNeighbors'];
+const VARIANT_OPTIONS_STORAGE_KEY = 'tsurotations.variantOptions';
 
 /**
  * Collects the active variant set from the HTML configuration checkboxes.
@@ -913,9 +1037,11 @@ const PLAYER_NAME_STORAGE_KEY = 'tsurotations.playerName';
  */
 function getVariantsFromUI() {
     // This safety rule is intentionally always enabled and has no UI toggle.
-    const variants = [AvoidFatalPlayVariant];
+    //const variants = [AvoidFatalPlayVariant];
+    const variants = [];
     if (document.getElementById('vWrap').checked) variants.push(TorusWrapVariant);
     if (document.getElementById('vRotatePass').checked) variants.push(RotateOnPassThroughVariant);
+    if (document.getElementById('vReplacements').checked) variants.push(replacementsVariant);
     if (document.getElementById('vOnePerCell').checked) variants.push(OnePerCellVariant);
     if (document.getElementById('vNoNeighbors').checked) variants.push(NoNeighborsVariant);
     return variants;
@@ -1010,12 +1136,18 @@ function setNetworkStatus(message) {
 function updateMultiplayerUI() {
     const newGameButton = document.getElementById('newGameBtn');
     const disconnectButton = document.getElementById('disconnectBtn');
+    const joinIdInput = document.getElementById('joinId');
+    const joinButton = document.getElementById('joinBtn');
+    const multiplayerLabel = document.getElementById('multiplayerMenuLabel');
     const requiredPlayers = clamp(parseInt(document.getElementById('numPlayers').value) || 2, 2, 8);
     const connectedPlayers = clientConnections.length + (isHost ? 1 : 0);
-    const isClient = !!hostConnection && !isHost;
+    const isClient = !!hostConnection?.open && !isHost;
 
     newGameButton.disabled = isClient || (isHost && connectedPlayers < requiredPlayers);
     disconnectButton.hidden = !isClient;
+    joinIdInput.hidden = isClient;
+    joinButton.hidden = isClient;
+    multiplayerLabel.textContent = isClient ? "Multiplayer - Connected" : (isHost ? "Multiplayer - Hosting" : "Multiplayer");
 }
 
 function lobbyStatus(connectedPlayers, totalPlayers) {
@@ -1100,6 +1232,10 @@ function deserializeState(snapshot) {
         pendingBonusAction: snapshot.pendingBonusAction ? {
             ...snapshot.pendingBonusAction,
             playerId: snapshot.pendingBonusAction.playerId ?? snapshot.lastActingPlayerId ?? null,
+            rotationPending: snapshot.pendingBonusAction.rotationPending
+                ?? (snapshot.pendingBonusAction.type === 'rotate-passthrough'),
+            replacementPending: snapshot.pendingBonusAction.replacementPending
+                ?? (snapshot.pendingBonusAction.type === 'replace-passthrough'),
         } : null,
         lastActingPlayerId: snapshot.lastActingPlayerId,
         variants: variantsFromIds(snapshot.variants),
@@ -1194,8 +1330,29 @@ function disconnectFromGame() {
     closePeer();
     isHost = false;
     destroyLocalGame();
+    document.getElementById('hostCodePanel').classList.add('hidden');
+    document.getElementById('hostCodeLabel').textContent = '';
     document.getElementById('hostCode').textContent = '';
+    document.getElementById('copyBtn').classList.add('hidden');
     setNetworkStatus('Local game');
+}
+
+/**
+ * Restores the local multiplayer controls after the host connection closes.
+ *
+ * @param {object} connection - The client connection that was closed.
+ */
+function handleHostDisconnect(connection) {
+    if (hostConnection !== connection) return;
+    hostConnection = null;
+    if (peer) peer.destroy();
+    peer = null;
+    destroyLocalGame();
+    document.getElementById('hostCodePanel').classList.add('hidden');
+    document.getElementById('hostCodeLabel').textContent = '';
+    document.getElementById('hostCode').textContent = '';
+    document.getElementById('copyBtn').classList.add('hidden');
+    setNetworkStatus('Host disconnected.');
 }
 
 /**
@@ -1211,7 +1368,10 @@ function startHosting() {
     peer = new Peer();
     setNetworkStatus('Creating host code...');
     peer.on('open', id => {
-        document.getElementById('hostCode').textContent = `Share this host code: ${id}`;
+        document.getElementById('hostCodePanel').classList.remove('hidden');
+        document.getElementById('hostCodeLabel').textContent = 'Share this host code';
+        document.getElementById('hostCode').textContent = id;
+        document.getElementById('copyBtn').classList.remove('hidden');
         broadcastLobbyStatus();
     });
     peer.on('connection', connection => {
@@ -1334,12 +1494,32 @@ function handleHostMessage(connection, message) {
         const pendingPlayerId = state.pendingBonusAction?.playerId ?? state.lastActingPlayerId;
         if (!state.pendingBonusAction || pendingPlayerId !== message.playerId) return;
         const { x, y } = state.pendingBonusAction.cell;
-        if (message.action === 'rotate' && Number.isInteger(message.steps) && message.steps >= 0 && message.steps <= 3) {
+        if (state.pendingBonusAction.replacementPending
+            && message.action === 'replace'
+            && typeof message.tileId === 'string'
+            && Number.isInteger(message.steps) && message.steps >= 0 && message.steps <= 3) {
+            const tileDef = tileDefinition(message.tileId);
+            if (!tileDef || !resolveBonusReplace(state, x, y, tileDef, message.steps)) return;
+            broadcastState();
+            return;
+        }
+        if (state.pendingBonusAction.replacementPending && message.action === 'confirm-replace') {
+            confirmReplacementBonus(state);
+            broadcastState();
+            return;
+        }
+        if (state.pendingBonusAction.rotationPending
+            && message.action === 'rotate'
+            && Number.isInteger(message.steps) && message.steps >= 0 && message.steps <= 3) {
             resolveBonusRotate(state, x, y, message.steps);
-        } else if (message.action === 'skip') {
+            broadcastState();
+            return;
+        }
+        if (message.action === 'skip') {
             skipBonus(state);
-        } else return;
-        broadcastState();
+            broadcastState();
+            return;
+        }
     }
 }
 
@@ -1358,12 +1538,13 @@ function joinGame() {
     peer = new Peer();
     setNetworkStatus('Connecting to host...');
     peer.on('open', () => {
-        hostConnection = peer.connect(hostId);
-        hostConnection.on('open', () => {
-            hostConnection.send({ type: 'join', name: getPlayerName() });
+        const connection = peer.connect(hostId);
+        hostConnection = connection;
+        connection.on('open', () => {
+            connection.send({ type: 'join', name: getPlayerName() });
             setNetworkStatus('Connected. Waiting for the host state.');
         });
-        hostConnection.on('data', message => {
+        connection.on('data', message => {
             if (message.type === 'lobby') {
                 setNetworkStatus(lobbyStatus(message.connectedPlayers, message.totalPlayers));
             } else if (message.type === 'assigned') {
@@ -1380,8 +1561,8 @@ function joinGame() {
                 setNetworkStatus(message.message);
             }
         });
-        hostConnection.on('close', () => setNetworkStatus('Host disconnected.'));
-        hostConnection.on('error', () => setNetworkStatus('Could not connect to host.'));
+        connection.on('close', () => handleHostDisconnect(connection));
+        connection.on('error', () => setNetworkStatus('Could not connect to host.'));
     });
     peer.on('error', error => setNetworkStatus(`Network error: ${error.type || 'connection failed'}`));
 }
@@ -1404,12 +1585,44 @@ function render() {
         element.hidden = !state;
     });
     if (!state) return;
+    if (isNetworkedGame() && currentPlayer().id !== localPlayerId) {
+        selectedTileIndex = null;
+        selectedRotation = 0;
+    }
     renderBoard();
     renderHand();
     renderBonus();
     renderPlayers();
     renderLog();
+    renderActiveVariants();
     renderTurnBanner();
+}
+
+/**
+ * Renders the variants enabled for the active game.
+ */
+function renderActiveVariants() {
+    const el = document.getElementById('activeVariants');
+    el.innerHTML = '';
+    const labels = {
+        'torus-wrap': 'Torus wrap',
+        'rotate-on-passthrough': 'Rotations',
+        'replacements': 'Replacements',
+        'one-player-per-cell': 'One player per cell (start)',
+        'no-neighbors': 'No neighbors (start)',
+    };
+    const variants = state.variants || [];
+    if (variants.length === 0) {
+        const empty = document.createElement('li');
+        empty.textContent = 'No variants selected.';
+        el.appendChild(empty);
+        return;
+    }
+    for (const variant of variants) {
+        const item = document.createElement('li');
+        item.textContent = labels[variant.name] || variant.name;
+        el.appendChild(item);
+    }
 }
 
 /**
@@ -1419,12 +1632,11 @@ function renderTurnBanner() {
     const el = document.getElementById('turnBanner');
     if (state.gameOver) { el.textContent = state.log[state.log.length-1] || 'Game over'; return; }
     const p = currentPlayer();
-    const suffix = state.pendingBonusAction && localPlayerCanSeeBonus() ? ' — choose a tile to rotate' : '';
     el.innerHTML = '';
     const marker = document.createElement('span');
     marker.style.color = p.color;
     marker.textContent = '●';
-    el.append(marker, ` ${p.name}'s turn${suffix}`);
+    el.append(marker, ` ${p.name}'s turn`);
 }
 
 /**
@@ -1503,14 +1715,18 @@ function classifyPair(a, b) {
  *
  * @param {number[][]} paths - Tile path pairs.
  * @param {number} size - Output size for the SVG.
+ * @param {{x?:number, y?:number}} [cell] - Board coordinates for interactive paths.
  * @returns {string} SVG markup for the tile.
  */
-function tileSvgMarkup(paths, size) {
+function tileSvgMarkup(paths, size, cornerRadius, cell) {
   const pts = POINT_COORD.map(c => ({ x: c.x * size, y: c.y * size }));
   const cx = size / 2, cy = size / 2;
-  let s = `<rect x="0" y="0" width="${size}" height="${size}" fill="#0c0c0c" stroke="var(--line)" stroke-width="1"/>`;
+  const pathStrokeWidth = 3 * size / 64;
+  const pathHitStrokeWidth = 12 * size / 64;
+  let s = `<rect x="0" y="0" width="${size}" height="${size}" rx="${cornerRadius}" fill="#0c0c0c" stroke="var(--line)" stroke-width="1"/>`;
 
-  for (const [a, b] of paths) {
+  for (let pathIndex = 0; pathIndex < paths.length; pathIndex++) {
+    const [a, b] = paths[pathIndex];
     const pa = pts[a], pb = pts[b];
     const kind = classifyPair(a, b);
     let d;
@@ -1537,10 +1753,110 @@ function tileSvgMarkup(paths, size) {
       d = `M ${pa.x} ${pa.y} Q ${ctrlX} ${ctrlY} ${pb.x} ${pb.y}`;
     }
 
-    s += `<path d="${d}" stroke="#7fb8ff" stroke-width="3" fill="none" stroke-linecap="round"/>`;
+    const data = cell
+        ? ` data-cell-x="${cell.x}" data-cell-y="${cell.y}" data-path-index="${pathIndex}"`
+        : '';
+    s += `<g class="tilePath"${data}><path class="tilePathHitArea" d="${d}" stroke="transparent" stroke-width="${pathHitStrokeWidth}" fill="none" stroke-linecap="round"/><path d="${d}" stroke="#7fb8ff" stroke-width="${pathStrokeWidth}" style="--tile-path-stroke-width:${pathStrokeWidth}" fill="none" stroke-linecap="round"/></g>`;
   }
   return s;
 }
+
+/**
+ * Finds every placed or selected-preview tile path connected to a board path
+ * through matching endpoints across adjacent cells.
+ *
+ * @param {number} startX - Starting tile column.
+ * @param {number} startY - Starting tile row.
+ * @param {number} startPathIndex - Starting path index.
+ * @returns {Set<string>} Keys identifying the connected tile paths.
+ */
+function connectedTilePaths(startX, startY, startPathIndex) {
+    const connected = new Set();
+    const queue = [{ x: startX, y: startY, pathIndex: startPathIndex }];
+
+    while (queue.length) {
+        const current = queue.shift();
+        const key = `${current.x},${current.y},${current.pathIndex}`;
+        if (connected.has(key)) continue;
+        const cell = state.board.getCell(current.x, current.y) || selectedPreviewCell(current.x, current.y);
+        const path = cell?.paths[current.pathIndex];
+        if (!path) continue;
+        connected.add(key);
+
+        for (const endpoint of path) {
+            const side = Math.floor(endpoint / 2);
+            let neighbor = state.board.neighbor(current.x, current.y, side);
+            for (const variant of state.variants) {
+                if (variant.getNeighbor) {
+                    const override = variant.getNeighbor(state.board, current.x, current.y, side);
+                    if (override !== undefined) neighbor = override;
+                }
+            }
+            if (!neighbor) continue;
+
+            const neighborCell = state.board.getCell(neighbor.x, neighbor.y)
+                || selectedPreviewCell(neighbor.x, neighbor.y);
+            if (!neighborCell) continue;
+            const neighborPoint = neighbor.side * 2 + (1 - endpoint % 2);
+            const neighborPathIndex = neighborCell.paths.findIndex(([a, b]) => a === neighborPoint || b === neighborPoint);
+            if (neighborPathIndex >= 0) {
+                queue.push({ x: neighbor.x, y: neighbor.y, pathIndex: neighborPathIndex });
+            }
+        }
+    }
+
+    return connected;
+}
+
+/**
+ * Returns the selected tile as a virtual cell when it is previewed at a target.
+ *
+ * @param {number} x - Cell column.
+ * @param {number} y - Cell row.
+ * @returns {{paths:number[][]}|null} Preview paths or null when no preview is present.
+ */
+function selectedPreviewCell(x, y) {
+    if (selectedTileIndex === null || state.gameOver || state.pendingBonusAction?.replacementPending) return null;
+    if (isNetworkedGame() && currentPlayer().id !== localPlayerId) return null;
+    const target = frontierOf(state, currentPlayer());
+    if (!target || target.x !== x || target.y !== y || state.board.getCell(x, y)) return null;
+
+    const networked = !!(isHost || hostConnection);
+    const player = networked
+        ? state.players.find(candidate => candidate.id === localPlayerId)
+        : currentPlayer();
+    const tileDef = player && state.hands[player.id]?.[selectedTileIndex];
+    if (!tileDef) return null;
+    return { paths: rotateTilePaths(tileDef.paths, selectedRotation) };
+}
+
+function clearTilePathHighlight() {
+    svg.querySelectorAll('.tilePath.connected-highlight').forEach(path => {
+        path.classList.remove('connected-highlight');
+    });
+}
+
+function highlightConnectedTilePaths(event) {
+    const pathGroup = event.target.closest?.('.tilePath');
+    if (!pathGroup || !svg.contains(pathGroup) || !state) return;
+
+    const connected = connectedTilePaths(
+        Number(pathGroup.dataset.cellX),
+        Number(pathGroup.dataset.cellY),
+        Number(pathGroup.dataset.pathIndex),
+    );
+    svg.querySelectorAll('.tilePath').forEach(path => {
+        const key = `${path.dataset.cellX},${path.dataset.cellY},${path.dataset.pathIndex}`;
+        path.classList.toggle('connected-highlight', connected.has(key));
+    });
+}
+
+svg.addEventListener('pointerover', highlightConnectedTilePaths);
+svg.addEventListener('pointerout', event => {
+    const pathGroup = event.target.closest?.('.tilePath');
+    const relatedGroup = event.relatedTarget?.closest?.('.tilePath');
+    if (pathGroup && pathGroup !== relatedGroup) clearTilePathHighlight();
+});
 
 /**
  * Draws the current player's hand and enables or disables placement controls.
@@ -1553,51 +1869,83 @@ function localPlayerCanSeeBonus() {
     return pending.playerId === localPlayerId;
 }
 
+function isNetworkedGame() {
+    return !!(isHost || hostConnection);
+}
+
+function selectedReplacementTile() {
+    if (selectedTileIndex === null || !state.pendingBonusAction) return null;
+    const player = state.players.find(candidate => candidate.id === state.pendingBonusAction.playerId);
+    return player ? state.hands[player.id]?.[selectedTileIndex] || null : null;
+}
+
 function renderHand() {
     const handEl = document.getElementById('hand');
     handEl.innerHTML = '';
-    const networked = !!(isHost || hostConnection);
+    const networked = isNetworkedGame();
     const p = networked ? state.players.find(player => player.id === localPlayerId) : currentPlayer();
     const hand = state.hands[p.id] || [];
+    const myTurn = !networked || currentPlayer().id === localPlayerId;
     hand.forEach((tileDef, i) => {
         const rotation = (i === selectedTileIndex) ? selectedRotation : 0;
         const paths = rotateTilePaths(tileDef.paths, rotation);
         const btn = document.createElement('div');
         btn.className = 'tileBtn' + (i === selectedTileIndex ? ' selected' : '');
-        btn.innerHTML = `<svg width="${TILE_SIZE}" height="${TILE_SIZE}" viewBox="0 0 ${TILE_SIZE} ${TILE_SIZE}">${tileSvgMarkup(paths, TILE_SIZE)}</svg>`;
-        btn.onclick = () => { selectedTileIndex = i; selectedRotation = 0; render(); };
+        btn.innerHTML = `<svg width="${TILE_SIZE}" height="${TILE_SIZE}" viewBox="0 0 ${TILE_SIZE} ${TILE_SIZE}">${tileSvgMarkup(paths, TILE_SIZE, 5)}</svg>`;
+        btn.onclick = () => {
+            if (!myTurn) return;
+            if (selectedTileIndex === i) {
+                selectedTileIndex = null;
+                selectedRotation = 0;
+            } else {
+                selectedTileIndex = i;
+                selectedRotation = 0;
+            }
+            render();
+        };
         handEl.appendChild(btn);
     });
     const pending = !!state.pendingBonusAction && localPlayerCanSeeBonus();
     const busy = pending || !!state.activeResolution;
     const selecting = !!state.selectingStartingPositions;
-    let myTurn = true;
-    if (networked) myTurn = currentPlayer().id === localPlayerId;
     
     // Disable tile actions while players are selecting starting positions
-    document.getElementById('rotateBtnLeft').disabled = selecting || busy || !myTurn || selectedTileIndex === null || !canRotate(state, p);
-    document.getElementById('rotateBtnRight').disabled = selecting || busy || !myTurn || selectedTileIndex === null || !canRotate(state, p);
+    const replacementPending = state.pendingBonusAction?.replacementPending && localPlayerCanSeeBonus();
+    const rotationBusy = busy && !replacementPending;
+    document.getElementById('rotateBtnLeft').disabled = selecting || rotationBusy || !myTurn || selectedTileIndex === null || !canRotate(state, p);
+    document.getElementById('rotateBtnRight').disabled = selecting || rotationBusy || !myTurn || selectedTileIndex === null || !canRotate(state, p);
     document.getElementById('placeBtn').disabled = selecting || busy || !myTurn || selectedTileIndex === null || state.gameOver;
+    const replaceBtn = document.getElementById('replaceBtn');
+    const confirmReplaceBtn = document.getElementById('confirmReplaceBtn');
+    document.getElementById('placeBtn').hidden = !!replacementPending;
+    replaceBtn.hidden = !replacementPending;
+    replaceBtn.disabled = selecting || !myTurn || selectedTileIndex === null || state.gameOver;
+    confirmReplaceBtn.hidden = !replacementPending;
+    confirmReplaceBtn.disabled = selecting || !myTurn || state.gameOver;
 }
 
 /**
- * Renders the pending bonus-rotation choice card when a variant pauses resolution.
+ * Positions the pending bonus-rotation controls over the paused tile.
  */
 function renderBonus() {
-    const card = document.getElementById('bonusCard');
+    const controls = document.getElementById('bonusControls');
     const pending = state.pendingBonusAction;
-    const visible = pending && localPlayerCanSeeBonus();
-    card.style.display = visible ? 'block' : 'none';
+    const visible = pending?.rotationPending
+        && !pending?.replacementPending
+        && localPlayerCanSeeBonus();
+    controls.hidden = !visible;
     if (!visible) return;
 
     const { x, y } = pending.cell;
-    const cell = state.board.getCell(x, y);
-    const paths = rotateTilePaths(cell.paths, bonusRotationSteps);
-    const el = document.getElementById('bonusTiles');
-    el.innerHTML = `<div class="tileBtn selected">
-            <svg width="${TILE_SIZE}" height="${TILE_SIZE}" viewBox="0 0 ${TILE_SIZE} ${TILE_SIZE}">${tileSvgMarkup(paths, TILE_SIZE)}</svg>
-            <div style="font-size:10px;color:var(--muted);text-align:center;">(${x},${y})</div>
-        </div>`;
+    const boardRect = svg.getBoundingClientRect();
+    const wrapRect = boardWrap.getBoundingClientRect();
+    const cellSize = renderedCellSize;
+    const boardFrame = BASE_BOARD_FRAME * cellSize / BASE_CELL_SIZE;
+    controls.style.setProperty('--bonus-cell-size', `${cellSize}px`);
+    controls.style.setProperty('--bonus-button-size', `${16 * cellSize / BASE_CELL_SIZE}px`);
+    controls.style.setProperty('--bonus-button-font-size', `${12 * cellSize / BASE_CELL_SIZE}px`);
+    controls.style.left = `${boardRect.left - wrapRect.left + boardFrame + x * cellSize}px`;
+    controls.style.top = `${boardRect.top - wrapRect.top + boardFrame + y * cellSize}px`;
 }
 
 /**
@@ -1605,51 +1953,96 @@ function renderBonus() {
  */
 function renderBoard() {
     const w = state.board.width, h = state.board.height;
-    const boardWidth = w * CELL;
-    const boardHeight = h * CELL;
-    const svgWidth = boardWidth + BOARD_FRAME * 2;
-    const svgHeight = boardHeight + BOARD_FRAME * 2;
+    const boardStyles = getComputedStyle(boardWrap);
+    const availableWidth = boardWrap.clientWidth
+        - parseFloat(boardStyles.paddingLeft)
+        - parseFloat(boardStyles.paddingRight);
+    const availableHeight = boardWrap.clientHeight
+        - parseFloat(boardStyles.paddingTop)
+        - parseFloat(boardStyles.paddingBottom);
+    const frameRatio = BASE_BOARD_FRAME / BASE_CELL_SIZE;
+    const cellSize = Math.max(1, Math.min(
+        availableWidth / (w + frameRatio * 2),
+        availableHeight / (h + frameRatio * 2)
+    ));
+    renderedCellSize = cellSize;
+    const boardFrame = BASE_BOARD_FRAME * cellSize / BASE_CELL_SIZE;
+    const scale = cellSize / BASE_CELL_SIZE; // Scale of the entire game board and all pieces on it
+    const tokenOffset = 8 * scale; // Offset for tokens on the edge of the game board (start of game)
+    const tokenRadius = 7 * scale; // Token size
+    const tokenStrokeWidth = 1.5 * scale; // Token stroke width
+    const markerGap = 8 * scale; // Gap between starting position marker and game board
+    const markerOffset = 10 * scale; // Gap between two starting position markers on the same cell
+    const markerRadius = 7 * scale;
+    const markerStrokeWidth = 1 * scale;
+    const boardWidth = w * cellSize;
+    const boardHeight = h * cellSize;
+    const cellCornerRadius = 7 * scale;
+    const svgWidth = boardWidth + boardFrame * 2;
+    const svgHeight = boardHeight + boardFrame * 2;
     svg.setAttribute('width', svgWidth);
     svg.setAttribute('height', svgHeight);
     svg.setAttribute('viewBox', `0 0 ${svgWidth} ${svgHeight}`);
     let s = '';
 
     const target = state.gameOver ? null : frontierOf(state, currentPlayer());
+    const pending = state.pendingBonusAction;
 
     for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
             const cell = state.board.getCell(x, y);
             const isCurrentTarget = target && x === target.x && y === target.y && !cell;
-            s += `<g transform="translate(${BOARD_FRAME + x * CELL},${BOARD_FRAME + y * CELL})">`;
-            s += `<rect width="${CELL}" height="${CELL}" fill="${isCurrentTarget ? '#22314a' : '#1a1e26'}" stroke="var(--line)" stroke-width="1"/>`;
-            if (cell) s += tileSvgMarkup(cell.paths, CELL);
+            const isReplacementPreview = pending?.replacementPending && selectedReplacementTile();
+            const isBonusTarget = cell && pending?.cell.x === x
+                && pending.cell.y === y && localPlayerCanSeeBonus()
+                && (!pending.replacementPending || isReplacementPreview);
+            s += `<g transform="translate(${boardFrame + x * cellSize},${boardFrame + y * cellSize})">`;
+            s += `<rect width="${cellSize}" height="${cellSize}" rx="${cellCornerRadius}" fill="${isCurrentTarget ? '#22314a' : '#1a1e26'}" stroke="var(--line)" stroke-width="1"/>`;
+            if (cell) {
+                let paths = cell.paths;
+                if (isBonusTarget && pending.rotationPending) {
+                    paths = rotateTilePaths(cell.paths, bonusRotationSteps);
+                }
+                if (isBonusTarget && pending.replacementPending) {
+                    const replacement = selectedReplacementTile();
+                    if (replacement) paths = rotateTilePaths(replacement.paths, selectedRotation);
+                }
+                const tileMarkup = tileSvgMarkup(paths, cellSize, cellCornerRadius, { x, y });
+                s += isBonusTarget ? `<g class="tilePreview">${tileMarkup}</g>` : tileMarkup;
+            }
+            if (isCurrentTarget && selectedTileIndex !== null) {
+                const preview = selectedPreviewCell(x, y);
+                if (preview) s += `<g class="tilePreview">${tileSvgMarkup(preview.paths, cellSize, cellCornerRadius, { x, y })}</g>`;
+            }
             s += `</g>`;
         }
     }
 
-    s += `<path d="M 0 0 H ${svgWidth} V ${svgHeight} H 0 Z M ${BOARD_FRAME} ${BOARD_FRAME} H ${BOARD_FRAME + boardWidth} V ${BOARD_FRAME + boardHeight} H ${BOARD_FRAME} Z" fill="#3a4150" fill-rule="evenodd"/>`;
+    const outerFramePath = `M ${cellCornerRadius} 0 H ${svgWidth - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${svgWidth} ${cellCornerRadius} V ${svgHeight - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${svgWidth - cellCornerRadius} ${svgHeight} H ${cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 0 ${svgHeight - cellCornerRadius} V ${cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${cellCornerRadius} 0 Z`;
+    const innerFramePath = `M ${boardFrame + cellCornerRadius} ${boardFrame} H ${boardFrame + boardWidth - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${boardFrame + boardWidth} ${boardFrame + cellCornerRadius} V ${boardFrame + boardHeight - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${boardFrame + boardWidth - cellCornerRadius} ${boardFrame + boardHeight} H ${boardFrame + cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${boardFrame} ${boardFrame + boardHeight - cellCornerRadius} V ${boardFrame + cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${boardFrame + cellCornerRadius} ${boardFrame} Z`;
+    s += `<path d="${outerFramePath} ${innerFramePath}" fill="#3a4150" fill-rule="evenodd"/>`;
 
     // Render perimeter selection markers (outside the board) when selecting starting positions.
     if (state.selectingStartingPositions) {
         for (let i = 0; i < state.perimeter.length; i++) {
             const spot = state.perimeter[i]; // position on the perimeter
             const side = spot.side; // side of the cell (0, 1, 2, 3)
-            const cx = BOARD_FRAME + spot.x * CELL + CELL / 2;
-            const cy = BOARD_FRAME + spot.y * CELL + CELL / 2;
+            const cx = boardFrame + spot.x * cellSize + cellSize / 2;
+            const cy = boardFrame + spot.y * cellSize + cellSize / 2;
             let px = cx, py = cy;
-            const gap = 12;
-            const offset = 10;
+            const gap = markerGap;
+            const offset = markerOffset;
             if (side === 0) {
                 px = cx + (spot.point === 0 ? -offset : offset);
-                py = BOARD_FRAME + spot.y * CELL - gap;
+                py = boardFrame + spot.y * cellSize - gap;
             } else if (side === 1) {
-                px = BOARD_FRAME + spot.x * CELL + CELL + gap;
+                px = boardFrame + spot.x * cellSize + cellSize + gap;
                 py = cy + (spot.point === 2 ? -offset : offset);
             } else if (side === 2) {
                 px = cx + (spot.point === 4 ? offset : -offset);
-                py = BOARD_FRAME + spot.y * CELL + CELL + gap;
+                py = boardFrame + spot.y * cellSize + cellSize + gap;
             } else if (side === 3) {
-                px = BOARD_FRAME + spot.x * CELL - gap;
+                px = boardFrame + spot.x * cellSize - gap;
                 py = cy + (spot.point === 6 ? offset : -offset);
             }
 
@@ -1665,8 +2058,8 @@ function renderBoard() {
 
             if (canPick && !occupant) {
                 s += '<g class="perim"' + ' onclick="chooseStartingPosition(' + i + ')"' + '>';
-                s += `<circle cx="${px}" cy="${py}" r="14" fill="transparent" pointer-events="all"/>`;
-                s += `<circle cx="${px}" cy="${py}" r="8" fill="none" stroke="#9aa4b6" stroke-width="2"/>`;
+                s += `<circle cx="${px}" cy="${py}" r="${markerRadius}" fill="transparent" pointer-events="all"/>`;
+                s += `<circle cx="${px}" cy="${py}" r="${markerRadius}" fill="none" stroke="#9aa4b6" stroke-width="${markerStrokeWidth}"/>`;
                 s += `</g>`;
             }
         }
@@ -1679,39 +2072,82 @@ function renderBoard() {
     // on, and the token visibly rides along with it.
     const inProgress = state.activeResolution?.current;
     const allTokens = [...state.players, ...state.npcs];
+    const bonusPreview = state.pendingBonusAction && localPlayerCanSeeBonus()
+        ? state.pendingBonusAction.cell
+        : null;
+    const bonusPreviewShift = (2 * bonusRotationSteps) % TOTAL_POINTS;
     for (const t of allTokens) {
         const live = t.alive
             ? ((inProgress && inProgress.token === t) ? inProgress : t)
-            : t.deathPosition;
+            : (t.deathRenderPosition || t.deathPosition);
         if (!live) continue;
         if (live.x === null || live.x === undefined) continue; // not yet placed on the perimeter
         const cell = state.board.getCell(live.x, live.y);
-        const point = !t.alive || !cell ? live.point : tileExit(cell.paths, live.point);
+        const isBonusPreview = t.alive && cell && bonusPreview
+            && live.x === bonusPreview.x && live.y === bonusPreview.y;
+        let paths = cell?.paths;
+        if (isBonusPreview && state.pendingBonusAction.rotationPending) {
+            paths = rotateTilePaths(cell.paths, bonusRotationSteps);
+        }
+        if (isBonusPreview && state.pendingBonusAction.replacementPending) {
+            const replacement = selectedReplacementTile();
+            if (replacement) paths = rotateTilePaths(replacement.paths, selectedRotation);
+        }
+        const entryPoint = isBonusPreview && state.pendingBonusAction.rotationPending
+            && !state.pendingBonusAction.replacementPending
+            ? (live.point + bonusPreviewShift) % TOTAL_POINTS
+            : live.point;
+        const previewPosition = isBonusPreview ? { ...live, point: entryPoint } : live;
+        const previewCell = isBonusPreview ? { ...cell, paths } : cell;
+        const previewWouldEliminate = isBonusPreview && inProgress?.token === t
+            && !getNeighboringCell(state, previewPosition, previewCell);
+        let point = !t.alive || !cell
+            ? live.point
+            : tileExit(previewWouldEliminate ? cell.paths : paths, previewWouldEliminate ? live.point : entryPoint);
+        if (isBonusPreview && state.pendingBonusAction.replacementPending && selectedReplacementTile()) {
+            point = tileExit(cell.paths, live.point);
+        }
         const coord = POINT_COORD[point];
         const side = Math.floor(point / 2);
         if (t.alive && !cell && t.entryX !== null && t.entryX !== undefined) {
-            const px = BOARD_FRAME + t.entryX * CELL + coord.x * CELL
-                + (side === 1 ? DEAD_TOKEN_OFFSET : side === 3 ? -DEAD_TOKEN_OFFSET : 0);
-            const py = BOARD_FRAME + t.entryY * CELL + coord.y * CELL
-                + (side === 2 ? DEAD_TOKEN_OFFSET : side === 0 ? -DEAD_TOKEN_OFFSET : 0);
-            s += `<circle cx="${px}" cy="${py}" r="7" fill="${t.color}" stroke="#0a0d12" stroke-width="1.5"/>`;
+            const px = boardFrame + t.entryX * cellSize + coord.x * cellSize
+                + (side === 1 ? tokenOffset : side === 3 ? -tokenOffset : 0);
+            const py = boardFrame + t.entryY * cellSize + coord.y * cellSize
+                + (side === 2 ? tokenOffset : side === 0 ? -tokenOffset : 0);
+            s += `<circle cx="${px}" cy="${py}" r="${tokenRadius}" fill="${t.color}" stroke="#0a0d12" stroke-width="${tokenStrokeWidth}"/>`;
             continue;
         }
-        const outwardX = side === 1 ? DEAD_TOKEN_OFFSET : side === 3 ? -DEAD_TOKEN_OFFSET : 0;
-        const outwardY = side === 2 ? DEAD_TOKEN_OFFSET : side === 0 ? -DEAD_TOKEN_OFFSET : 0;
+        const outwardX = side === 1 ? tokenOffset : side === 3 ? -tokenOffset : 0;
+        const outwardY = side === 2 ? tokenOffset : side === 0 ? -tokenOffset : 0;
         // Keep living tokens just inside the cell rather than centered on its edge.
-        const edgeInset = 4;
+        const edgeInset = 4 * scale;
         const inwardX = side === 1 ? -edgeInset : side === 3 ? edgeInset : 0;
         const inwardY = side === 2 ? -edgeInset : side === 0 ? edgeInset : 0;
-        const px = BOARD_FRAME + live.x * CELL + coord.x * CELL
+        const px = boardFrame + live.x * cellSize + coord.x * cellSize
             + (t.alive ? inwardX : outwardX);
-        const py = BOARD_FRAME + live.y * CELL + coord.y * CELL
+        const py = boardFrame + live.y * cellSize + coord.y * cellSize
             + (t.alive ? inwardY : outwardY);
-        s += `<circle cx="${px}" cy="${py}" r="7" fill="${t.color}" stroke="#0a0d12" stroke-width="1.5"/>`;
+        s += `<circle cx="${px}" cy="${py}" r="${tokenRadius}" fill="${t.color}" stroke="#0a0d12" stroke-width="${tokenStrokeWidth}"/>`;
     }
 
     svg.innerHTML = s;
 }
+
+let boardRenderFrame = null;
+function scheduleBoardRender() {
+    if (!state || boardRenderFrame !== null) return;
+    boardRenderFrame = requestAnimationFrame(() => {
+        boardRenderFrame = null;
+        if (state) {
+            renderBoard();
+            renderBonus();
+        }
+    });
+}
+
+const boardResizeObserver = new ResizeObserver(scheduleBoardRender);
+boardResizeObserver.observe(boardWrap);
+window.addEventListener('resize', scheduleBoardRender);
 
 /**
  * Chooses a perimeter position for the active player during setup.
@@ -1758,6 +2194,25 @@ function chooseStartingPosition(perimIndex) {
     }
     render();
     broadcastState();
+}
+
+function copyGameId() {
+    const idText = document.getElementById('hostCode').innerText;
+    navigator.clipboard.writeText(idText)
+        .then(() => {
+            showToast();
+        })
+        .catch(err => {
+            console.error("Failed to copy text ", err);
+        });
+}
+
+function showToast() {
+    const toast = document.getElementById('toast');
+    toast.classList.add("show");
+    setTimeout(() => {
+        toast.classList.remove("show");
+    }, 3000);
 }
 
 document.getElementById('newGameBtn').onclick = () => {
@@ -1823,6 +2278,13 @@ document.getElementById('placeBtn').onclick = () => {
     broadcastState();
 };
 window.addEventListener('keydown', (e) => {
+    if (e.target instanceof HTMLElement &&
+        (e.target.isContentEditable ||
+         e.target instanceof HTMLInputElement ||
+         e.target instanceof HTMLTextAreaElement ||
+         e.target instanceof HTMLSelectElement)) {
+        return;
+    }
     if (e.key === 'l' || e.key === 'L') document.getElementById('rotateBtnLeft').click();
     else if (e.key === 'r' || e.key === 'R') document.getElementById('rotateBtnRight').click();
 });
@@ -1835,17 +2297,57 @@ document.getElementById('bonusRotateBtnRight').onclick = () => {
     bonusRotationSteps = (bonusRotationSteps + 1) % 4;
     render();
 };
-document.getElementById('bonusConfirmBtn').onclick = () => {
+function confirmReplacement() {
     if (!state.pendingBonusAction || !localPlayerCanSeeBonus()) return;
+    const { x, y } = state.pendingBonusAction.cell;
+    const tileDef = selectedReplacementTile();
+    if (!tileDef) return;
     if (hostConnection && !isHost) {
-        sendAction({ type: 'bonus', playerId: localPlayerId, action: 'rotate', steps: bonusRotationSteps });
+        sendAction({
+            type: 'bonus',
+            playerId: localPlayerId,
+            action: 'replace',
+            tileId: tileDef.id,
+            steps: selectedRotation,
+        });
         return;
     }
-    const { x, y } = state.pendingBonusAction.cell;
-    resolveBonusRotate(state, x, y, bonusRotationSteps);
+    if (!resolveBonusReplace(state, x, y, tileDef, selectedRotation)) return;
+    selectedTileIndex = null;
+    selectedRotation = 0;
     bonusRotationSteps = 0;
     render();
-    broadcastState(); // was previously missing here — clients never learned the host's own bonus choice
+    broadcastState();
+}
+document.getElementById('replaceBtn').onclick = confirmReplacement;
+document.getElementById('confirmReplaceBtn').onclick = () => {
+    if (!state.pendingBonusAction?.replacementPending || !localPlayerCanSeeBonus()) return;
+    if (hostConnection && !isHost) {
+        sendAction({ type: 'bonus', playerId: localPlayerId, action: 'confirm-replace' });
+        return;
+    }
+    confirmReplacementBonus(state);
+    selectedTileIndex = null;
+    selectedRotation = 0;
+    bonusRotationSteps = 0;
+    render();
+    broadcastState();
+};
+document.getElementById('bonusConfirmBtn').onclick = () => {
+    if (!state.pendingBonusAction || !localPlayerCanSeeBonus()) return;
+    const { x, y } = state.pendingBonusAction.cell;
+    if (state.pendingBonusAction.rotationPending) {
+        if (hostConnection && !isHost) {
+            sendAction({ type: 'bonus', playerId: localPlayerId, action: 'rotate', steps: bonusRotationSteps });
+            return;
+        }
+        resolveBonusRotate(state, x, y, bonusRotationSteps);
+        selectedTileIndex = null;
+        selectedRotation = 0;
+        bonusRotationSteps = 0;
+        render();
+        broadcastState();
+    }
 };
 document.getElementById('bonusSkipBtn').onclick = () => {
     if (!state.pendingBonusAction || !localPlayerCanSeeBonus()) return;
@@ -1912,6 +2414,45 @@ const boardSizeInput = document.getElementById("boardSize");
 const vOnePerCellCheckBox = document.getElementById("vOnePerCell");
 const vNoNeighborsCheckbox = document.getElementById("vNoNeighbors");
 
+function saveVariantCheckboxes() {
+    const options = {};
+    for (const id of VARIANT_CHECKBOX_IDS) {
+        options[id] = document.getElementById(id).checked;
+    }
+    localStorage.setItem(VARIANT_OPTIONS_STORAGE_KEY, JSON.stringify(options));
+}
+
+function restoreVariantCheckboxes() {
+    const storedOptions = localStorage.getItem(VARIANT_OPTIONS_STORAGE_KEY);
+    if (!storedOptions) return;
+
+    let options;
+    try {
+        options = JSON.parse(storedOptions);
+    } catch (error) {
+        localStorage.removeItem(VARIANT_OPTIONS_STORAGE_KEY);
+        return;
+    }
+    if (!options || typeof options !== 'object') {
+        localStorage.removeItem(VARIANT_OPTIONS_STORAGE_KEY);
+        return;
+    }
+    for (const id of VARIANT_CHECKBOX_IDS) {
+        if (typeof options[id] === 'boolean') {
+            document.getElementById(id).checked = options[id];
+        }
+    }
+}
+
+function syncNoNeighborsDependency() {
+    if (vNoNeighborsCheckbox.checked) {
+        vOnePerCellCheckBox.checked = true;
+        vOnePerCellCheckBox.disabled = true;
+    } else {
+        vOnePerCellCheckBox.disabled = false;
+    }
+}
+
 function updateNoNeighborsAvailability() {
     const boardSize = clamp(parseInt(boardSizeInput.value) || 6, 4, 12);
     const numPlayers = clamp(parseInt(numPlayersInput.value) || 2, 2, 8);
@@ -1923,20 +2464,23 @@ function updateNoNeighborsAvailability() {
     if (unavailable) {
         vNoNeighborsCheckbox.checked = false;
         vOnePerCellCheckBox.disabled = false;
+        saveVariantCheckboxes();
+    } else {
+        syncNoNeighborsDependency();
     }
 }
 
 numPlayersInput.addEventListener("input", updateNoNeighborsAvailability);
 boardSizeInput.addEventListener("input", updateNoNeighborsAvailability);
 
+for (const id of VARIANT_CHECKBOX_IDS) {
+    document.getElementById(id).addEventListener("change", saveVariantCheckboxes);
+}
+
 vNoNeighborsCheckbox.addEventListener("click", function(event) {
-    if (event.target.checked) {
-        vOnePerCellCheckBox.checked = true;
-        vOnePerCellCheckBox.disabled = true;
-    }
-    else {
-        vOnePerCellCheckBox.disabled = false;
-    }
+    syncNoNeighborsDependency();
+    saveVariantCheckboxes();
 });
 
+restoreVariantCheckboxes();
 updateNoNeighborsAvailability();

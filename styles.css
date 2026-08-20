@@ -7,7 +7,10 @@
 
 body {
     margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif;
-    background:var(--bg); color:var(--text); display:flex; min-height:100vh;
+    background:var(--bg); color:var(--text); display:grid;
+    grid-template-columns:340px minmax(0, 1fr) 340px;
+    grid-template-rows:minmax(0, 1fr);
+    height:100vh; overflow:hidden;
 }
 
 .rowContainer {
@@ -41,13 +44,55 @@ body {
     overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
 }
 
-#boardWrap {flex:1; display:flex; align-items:center; justify-content:center; padding:24px;}
+#boardWrap {
+    grid-column: 2;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 24px;
+}
 
 #board {display:block; background:var(--bg);}
 
-#panel {
-    width:340px; background:var(--panel); border-left:1px solid var(--line);
-    padding:20px; display:flex; flex-direction:column; gap:18px; overflow-y:auto;
+#bonusControls {
+    position: absolute;
+    width: var(--bonus-cell-size);
+    height: var(--bonus-cell-size);
+    pointer-events: none;
+    z-index: 2;
+}
+
+#bonusControls button {
+    position: absolute;
+    width: var(--bonus-button-size);
+    height: var(--bonus-button-size);
+    padding: 0;
+    font-size: var(--bonus-button-font-size);
+    line-height: 1;
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#bonusRotateBtnLeft {top: calc(var(--bonus-button-size) * -0.5); left: calc(var(--bonus-button-size) * -0.5);}
+#bonusRotateBtnRight {top: calc(var(--bonus-button-size) * -0.5); right: calc(var(--bonus-button-size) * -0.5);}
+#bonusSkipBtn {bottom: calc(var(--bonus-button-size) * -0.5); left: calc(var(--bonus-button-size) * -0.5);}
+#bonusConfirmBtn {bottom: calc(var(--bonus-button-size) * -0.5); right: calc(var(--bonus-button-size) * -0.5);}
+
+#gameMenu {
+    grid-column:1; grid-row:1; width:340px; background:var(--panel);
+    border-right:1px solid var(--line); padding:20px; display:flex;
+    flex-direction:column; gap:18px; overflow-y:auto; min-height:0;
+}
+
+#tileMenu {
+    grid-column:3; grid-row:1; width:340px; background:var(--panel);
+    border-left:1px solid var(--line); padding:20px; overflow-y:auto; min-height:0;
 }
 
 h1 {font-size:16px; margin:0 0 4px; letter-spacing:.02em;}
@@ -65,7 +110,96 @@ input[type=number] {
 
 .row {display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
 
-.toggle {display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text); cursor:pointer;}
+.toggle {
+    display:flex;
+    align-items:center;
+    gap:6px;
+    font-size:13px;
+    color:var(--text);
+    cursor:pointer;
+    accent-color: #0066cc;
+}
+
+.checkbox-wrapper *,
+.checkbox-wrapper ::after,
+.checkbox-wrapper ::before {
+    box-sizing: border-box;
+}
+.checkbox-wrapper [type=checkbox].substituted {
+    margin: 0;
+    width: 0;
+    height: 0;
+    display: inline;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+}
+.checkbox-wrapper [type=checkbox].substituted + label:before {
+    content: "";
+    display: inline-block;
+    vertical-align: top;
+    height: 1.15em;
+    width: 1.15em;
+    margin-right: 0.6em;
+    color: rgba(0, 0, 0, 0.275);
+    border: solid 0.06em;
+    box-shadow: 0 0 0.04em, 0 0.06em 0.16em -0.03em inset, 0 0 0 0.07em transparent inset;
+    border-radius: 0.2em;
+    background: url('data:image/svg+xml;charset=UTF-8,<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xml:space="preserve" fill="white" viewBox="0 0 9 9"><rect x="0" y="4.3" transform="matrix(-0.707 -0.7072 0.7072 -0.707 0.5891 10.4702)" width="4.3" height="1.6" /><rect x="2.2" y="2.9" transform="matrix(-0.7071 0.7071 -0.7071 -0.7071 12.1877 2.9833)" width="6.1" height="1.7" /></svg>') no-repeat center, white;
+    background-size: 0;
+    will-change: color, border, background, background-size, box-shadow;
+    transform: translate3d(0, 0, 0);
+    transition: color 0.1s, border 0.1s, background 0.15s, box-shadow 0.1s;
+}
+.checkbox-wrapper [type=checkbox].substituted:enabled:active + label:before,
+.checkbox-wrapper [type=checkbox].substituted:enabled + label:active:before {
+    box-shadow: 0 0 0.04em, 0 0.06em 0.16em -0.03em transparent inset, 0 0 0 0.07em rgba(0, 0, 0, 0.1) inset;
+    background-color: #f0f0f0;
+}
+.checkbox-wrapper [type=checkbox].substituted:checked + label:before {
+    background-color: #3B99FC;
+    background-size: 0.75em;
+    color: rgba(0, 0, 0, 0.075);
+}
+.checkbox-wrapper [type=checkbox].substituted:checked:enabled:active + label:before,
+.checkbox-wrapper [type=checkbox].substituted:checked:enabled + label:active:before {
+        background-color: #0a7ffb;
+        color: rgba(0, 0, 0, 0.275);
+}
+.checkbox-wrapper [type=checkbox].substituted:focus + label:before {
+box-shadow: 0 0 0.04em, 0 0.06em 0.16em -0.03em transparent inset, 0 0 0 0.07em rgba(0, 0, 0, 0.1) inset, 0 0 0 3.3px rgba(65, 159, 255, 0.55), 0 0 0 5px rgba(65, 159, 255, 0.3);
+}
+.checkbox-wrapper [type=checkbox].substituted:focus:active + label:before,
+.checkbox-wrapper [type=checkbox].substituted:focus + label:active:before {
+    box-shadow: 0 0 0.04em, 0 0.06em 0.16em -0.03em transparent inset, 0 0 0 0.07em rgba(0, 0, 0, 0.1) inset, 0 0 0 3.3px rgba(65, 159, 255, 0.55), 0 0 0 5px rgba(65, 159, 255, 0.3);
+}
+.checkbox-wrapper [type=checkbox].substituted:disabled + label:before {
+    opacity: 0.5;
+}
+
+.checkbox-wrapper [type=checkbox].substituted.dark + label:before {
+    color: rgba(255, 255, 255, 0.275);
+    background-color: #222;
+    background-image: url('data:image/svg+xml;charset=UTF-8,<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xml:space="preserve" fill="rgba(34, 34, 34, 0.999)" viewBox="0 0 9 9"><rect x="0" y="4.3" transform="matrix(-0.707 -0.7072 0.7072 -0.707 0.5891 10.4702)" width="4.3" height="1.6" /><rect x="2.2" y="2.9" transform="matrix(-0.7071 0.7071 -0.7071 -0.7071 12.1877 2.9833)" width="6.1" height="1.7" /></svg>');
+}
+.checkbox-wrapper [type=checkbox].substituted.dark:enabled:active + label:before,
+.checkbox-wrapper [type=checkbox].substituted.dark:enabled + label:active:before {
+    background-color: #444;
+    box-shadow: 0 0 0.04em, 0 0.06em 0.16em -0.03em transparent inset, 0 0 0 0.07em rgba(255, 255, 255, 0.1) inset;
+}
+.checkbox-wrapper [type=checkbox].substituted.dark:checked + label:before {
+    background-color: #a97035;
+    color: rgba(255, 255, 255, 0.075);
+}
+.checkbox-wrapper [type=checkbox].substituted.dark:checked:enabled:active + label:before,
+.checkbox-wrapper [type=checkbox].substituted.dark:checked:enabled + label:active:before {
+    background-color: #c68035;
+    color: rgba(0, 0, 0, 0.275);
+}
+.checkbox-wrapper [type=checkbox].substituted + label {
+    -webkit-user-select: none;
+    user-select: none;
+}
 
 button {
     background:var(--accent); color:#0a1420; border:none; border-radius:6px;
@@ -81,9 +215,74 @@ button {
     padding:8px;
 }
 
+.copy-btn {
+  padding: 8px 16px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.copyBtn {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:32px;
+  height:32px;
+  padding:0;
+  background:rgba(95,180,255,.12);
+  color:var(--accent);
+  border:1px solid rgba(95,180,255,.25);
+  border-radius:6px;
+}
+
+.copyBtn:hover {
+  background:rgba(95,180,255,.22);
+  border-color:var(--accent);
+}
+
+.copyBtn svg {
+  width:14px;
+  height:14px;
+}
+
+/* Base styles for the toast popup */
+.toast {
+  visibility: hidden;
+  background-color: #333;
+  color: #fff;
+  text-align: center;
+  border-radius: 6px;
+  padding: 12px;
+  position: fixed;
+  z-index: 1000;
+  left: 50%;
+  top: 30px;
+  transform: translateX(-50%); /* Centered horizontally */
+  font-family: sans-serif;
+  opacity: 0;
+  transition: opacity 0.3s ease, top 0.3s ease;
+}
+
+/* Active class to trigger the smooth fade-in */
+.toast.show {
+  visibility: visible;
+  opacity: 1;
+  top: 40px; /* Slight upward movement effect */
+}
+
+.hidden {
+    display: none !important;
+}
+
 button.secondary {background:var(--panel2); color:var(--text); border:1px solid var(--line);}
 
 button:disabled {opacity:.4; cursor:not-allowed;}
+
+#activeVariants {margin:0; padding-left:20px; color:var(--text); font-size:13px;}
+
+#activeVariants li + li {margin-top:8px;}
 
 #players {display:flex; flex-direction:column; gap:6px;}
 
@@ -116,8 +315,73 @@ button:disabled {opacity:.4; cursor:not-allowed;}
 
 #turnBanner {font-size:14px; font-weight:600;}
 
-.networkStatus,.hostCode {font-size:12px; color:var(--muted); margin-top:8px; overflow-wrap:anywhere;}
+.networkStatus {font-size:12px; color:var(--muted); margin-top:8px; overflow-wrap:anywhere;}
+
+.hostCodePanel {
+    margin-top:24px;
+    padding:10px;
+    background:rgba(95,180,255,.06);
+    border:1px solid rgba(95,180,255,.2);
+    border-radius:8px;
+}
+
+.hostCodeLabel {
+    color:var(--muted);
+    font-size:10px;
+    font-weight:700;
+    letter-spacing:.1em;
+    line-height:1.2;
+    text-transform:uppercase;
+}
+
+.hostCodeRow {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-top:6px;
+}
+
+.hostCode {
+    flex:1;
+    min-width:0;
+    padding:7px 9px;
+    background:var(--bg);
+    border:1px solid var(--line);
+    border-radius:6px;
+    color:var(--text);
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:14px;
+    font-weight:700;
+    letter-spacing:.08em;
+    line-height:1.2;
+    overflow-wrap:anywhere;
+    text-align:center;
+}
 
 #joinId {min-width:0; flex:1; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:8px 6px;}
 
 svg text {user-select:none;}
+
+.tilePreview {
+    opacity:.45;
+    animation: tilePreviewFade 1.6s ease-in-out infinite;
+    pointer-events:none;
+}
+
+.tilePath {
+    pointer-events: stroke;
+}
+
+.tilePathHitArea {
+    pointer-events: stroke;
+}
+
+.tilePath.connected-highlight path {
+    stroke: #ffd166;
+    stroke-width: calc(var(--tile-path-stroke-width) * 1.3333);
+}
+
+@keyframes tilePreviewFade {
+    0%, 100% {opacity:.2;}
+    50% {opacity:.55;}
+}
