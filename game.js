@@ -334,6 +334,7 @@ const replacementsVariant = {
         if (token.id !== state.lastActingPlayerId) return; // only the active player gets the choice
         const resolution = state.activeResolution;
         const cellKey = cell.x + ',' + cell.y;
+        const crossedCells = resolution?.crossedCells.get(token.id);
         const start = resolution?.startAnchors.get(token.id);
         const isStartingCell = start && start.x === cell.x && start.y === cell.y;
         const newlyPlaced = resolution?.newlyPlacedCell;
