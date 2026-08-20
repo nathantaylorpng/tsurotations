@@ -1,20 +1,30 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Tsurotations</title>
-<link rel="stylesheet" href="styles.css">
+    <meta charset="UTF-8">
+    <title>Tsurotations</title>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-<div id="boardWrap"><svg id="board"></svg></div>
+<div id="boardWrap" class="gameSurface" hidden><svg id="board"></svg></div>
 
 <div id="panel">
-  <div>
+  <div class="rowContainer">
     <h1>Tsurotations</h1>
+    <div class="dropdown">
+      <button id="settingsBtn" class="dropdown-btn" aria-haspopup="true" aria-expanded="false" aria-controls="settingsMenu">
+          <i data-lucide="settings"></i>
+          <span class="sr-only">Open settings menu</span>
+      </button>
+      <div id="settingsMenu" class="dropdown-menu" role="menu" aria-labelledby="settingsBtn" hidden>
+        <h2><label for="playerNameInput">Player Name</label></h2>
+        <input type="text" id="playerNameInput" name="playerNameInput" maxlength="20" spellcheck="false" placeholder="Choose a name">
+      </div>
+    </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="setupCard">
     <h2>Setup</h2>
     <div class="row">
       <div><label>Board size</label><input id="boardSize" type="number" min="4" max="12" value="6"></div>
@@ -23,22 +33,25 @@
     <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
       <label class="toggle"><input type="checkbox" id="vWrap"> Torus wrap</label>
       <label class="toggle"><input type="checkbox" id="vRotatePass" checked> Rotate after crossing</label>
+      <label class="toggle"><input type="checkbox" id="vOnePerCell" checked> Can't start on the same tile as another player</label>
+      <label class="toggle"><input type="checkbox" id="vNoNeighbors"> Can't start next to another player</label>
     </div>
     <button id="newGameBtn" style="margin-top: 10px; width: 100%;">New Game</button>
-  </div>
 
-  <div class="card">
+    <br><br>
+
     <h2>Multiplayer</h2>
     <div class="row">
       <button id="hostBtn">Host game</button>
       <input id="joinId" placeholder="Host code" aria-label="Host code">
       <button id="joinBtn" class="secondary">Join</button>
+      <button id="disconnectBtn" class="secondary" hidden>Disconnect</button>
     </div>
     <div id="networkStatus" class="networkStatus">Local game</div>
     <div id="hostCode" class="hostCode"></div>
   </div>
 
-  <div class="card">
+  <div class="card gameSurface" hidden>
     <h2>Turn</h2>
     <div id="turnBanner">—</div>
     <div style="margin-top: 10px;">
@@ -52,7 +65,7 @@
     </div>
   </div>
 
-  <div class="card" id="bonusCard" style="display: none;">
+  <div class="card gameSurface" id="bonusCard" style="display: none;" hidden>
     <h2>Bonus: rotate a tile you passed through</h2>
     <div id="bonusTiles" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
     <div class="row" style="margin-top: 10px;">
@@ -63,12 +76,12 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card gameSurface" hidden>
     <h2>Players</h2>
     <div id="players"></div>
   </div>
 
-  <div class="card">
+  <div class="card gameSurface" style="display: none;" hidden>
     <h2>Log</h2>
     <div id="log"></div>
   </div>
@@ -76,5 +89,7 @@
 
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script src="game.js" defer></script>
+<script src="https://unpkg.com/lucide@latest"></script>
+<script>lucide.createIcons();</script>
 </body>
 </html>

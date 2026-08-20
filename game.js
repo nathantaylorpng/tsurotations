@@ -1,5 +1,5 @@
 /* =========================================================================
-     ENGINE  (framework-agnostic — no DOM code below this block boundary)
+     ENGINE
      =========================================================================
      Board geometry is abstracted so a HexBoard (or other tiling) could later
      implement the same interface: {inBounds, neighbor, getCell, setCell}.
@@ -191,13 +191,14 @@ function tileExit(paths, entryPoint) {
      Each variant is a plain object implementing zero or more of:
          modifyBoardConfig(config)          - tweak {wrap} before board creation
          setup(state)                       - run once at game start (e.g. spawn NPCs)
+         onBeforeStartingPosition(position) - return false to veto a starting position
          getNeighbor(board,x,y,side)        - override neighbor lookup
          canRotate(state, player)           - return false to forbid rotation
          onBeforePlaceTile(state,...)       - return false to veto a placement
-         onTileCrossed(state, token, cell)  - fires only when a token is about to leave `cell` for a NEXT cell that
-                                              already has a tile (i.e. the token is genuinely departing `cell` for
-                                              good this turn); set state.pendingBonusAction to pause the resolver
-                                              until the UI resolves it
+         onTileCrossed(state, token, cell)  - fires when a token is about to leave `cell` for a NEXT cell that
+                                              already has a tile, or when it is exiting the board from `cell`;
+                                              set state.pendingBonusAction to pause the resolver until the UI
+                                              resolves it
          onAfterResolve(state)              - run once, after everything for this turn (all tokens, all crossings) is done
          onEliminate(state, token)          - react to an elimination
      ========================================================================= */
@@ -230,10 +231,71 @@ const NpcWandererVariant = {
     }
 };
 
+const OnePerCellVariant = {
+    name: 'one-player-per-cell',
+    /**
+     * Return false if another player is already on this cell
+     * 
+     * @param {Number} state - Active game state
+     * @param {Number} spot - starting position on the perimeter (0-4)
+     */
+    onBeforeStartingPosition(state, spot) {
+        return !state.players.find(p => p?.entryX === spot.x && p?.entryY === spot.y);
+    }
+};
+
+const NoNeighborsVariant = {
+    name: 'no-neighbors',
+    /**
+     * Return false if another player is already on a neighboring cell
+     * 
+     * @param {Number} state - Active game state
+     * @param {Number} spot - starting position on the perimeter (0-4)
+     */
+    onBeforeStartingPosition(state, spot) {
+        for (let side = 0; side < 4; side++) {
+            const neighbor = state.board.neighbor(spot.x, spot.y, side);
+            if (neighbor && state.players.some(p =>
+                p?.entryX === neighbor.x && p?.entryY === neighbor.y
+            )) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
+const AvoidFatalPlayVariant = {
+    name: 'avoid-fatal-play',
+    /**
+     * Prevents a player from choosing a tile that eliminates them while any
+     * other tile or rotation in their hand would leave them alive.
+     *
+     * @param {object} state - Active game state.
+     * @param {object} player - Player attempting the placement.
+     * @param {object} tileDef - Tile being placed.
+     * @param {number} x - Placement column.
+     * @param {number} y - Placement row.
+     * @param {number} rotation - Tile rotation.
+     * @returns {boolean} False when this fatal play is avoidable.
+     */
+    onBeforePlaceTile(state, player, tileDef, x, y, rotation) {
+        if (!wouldPlacementEliminate(state, player, tileDef, x, y, rotation)) return true;
+
+        const hand = state.hands[player.id] || [];
+        const possiblePlays = [tileDef, ...hand].flatMap(tile =>
+            [0, 1, 2, 3].map(steps => ({ tile, rotation: steps }))
+        );
+        return possiblePlays.every(play =>
+            !isLegalSafePlacement(state, player, play.tile, x, y, play.rotation)
+        );
+    }
+};
+
 const RotateOnPassThroughVariant = {
     name: 'rotate-on-passthrough',
     /**
-     * Pauses resolution when the acting token crosses a tile and offers a bonus rotation choice.
+     * Pauses resolution when the acting token leaves a tile and offers a bonus rotation choice.
      *
      * @param {object} state - Active game state.
      * @param {object} token - Token that crossed the cell boundary.
@@ -259,6 +321,33 @@ const RotateOnPassThroughVariant = {
         state.pendingBonusAction = { type: 'rotate-passthrough', cell, playerId: state.lastActingPlayerId };
     }
 };
+
+/**
+ * Serializes the active variant list to their names.
+ *
+ * @returns {string[]} Variant names in use.
+ */
+function variantIds() {
+    return state.variants.map(variant => variant.name);
+}
+
+/**
+ * Rehydrates the enabled variant hook objects from their saved IDs.
+ *
+ * @param {string[]} ids - Variant IDs from a snapshot.
+ * @returns {object[]} Reconstructed variant objects.
+ */
+function variantsFromIds(ids) {
+    const available = {
+        'torus-wrap': TorusWrapVariant,
+        'rotate-on-passthrough': RotateOnPassThroughVariant,
+        'one-player-per-cell': OnePerCellVariant,
+        'avoid-fatal-play': AvoidFatalPlayVariant,
+    };
+    const variants = (ids || []).map(id => available[id]).filter(Boolean);
+    if (!variants.includes(AvoidFatalPlayVariant)) variants.push(AvoidFatalPlayVariant);
+    return variants;
+}
 
 /* =========================================================================
      GAME STATE / TURN LOGIC
@@ -305,8 +394,11 @@ function buildPerimeter(width, height) {
  */
 function newGame(opts) {
     const { size, numPlayers, variants } = opts;
+    const activeVariants = variants.includes(AvoidFatalPlayVariant)
+        ? variants
+        : [...variants, AvoidFatalPlayVariant];
     const boardConfig = { wrap: false };
-    for (const v of variants) v.modifyBoardConfig?.(boardConfig);
+    for (const v of activeVariants) v.modifyBoardConfig?.(boardConfig);
 
     const board = createBoard(size, size, boardConfig.wrap);
     const perimeter = buildPerimeter(size, size);
@@ -327,7 +419,7 @@ function newGame(opts) {
         perimeter,
         players,
         npcs: [],
-        variants,
+        variants: activeVariants,
         currentPlayerIndex: 0,
         gameOver: false,
         log: [],
@@ -341,7 +433,7 @@ function newGame(opts) {
     };
     
     shuffleArray(state.tileDrawPile);
-    for (const v of variants) v.setup?.(state);
+    for (const v of activeVariants) v.setup?.(state);
     for (const p of players) drawHand(state, p.id);
 
     return state;
@@ -469,7 +561,7 @@ function placeTile(state, tileDef, rotation, playerId, onStep) {
 
     for (const v of state.variants) {
         if (v.onBeforePlaceTile && v.onBeforePlaceTile(state, player, tileDef, target.x, target.y, rotation) === false) {
-            return {error: 'blocked by variant'};
+            return {error: 'Illegal tile placement'};
         }
     }
 
@@ -503,6 +595,54 @@ function placeTile(state, tileDef, rotation, playerId, onStep) {
 
     startResolution(state, tokensHere, onStep, { x: target.x, y: target.y }); // may finish the turn outright, or pause on a variant's pendingBonusAction
     return { ok: true };
+}
+
+function cloneStateForPlacementCheck(state) {
+    const board = createBoard(state.board.width, state.board.height, state.board.wrap);
+    for (const [key, cell] of state.board.cells) {
+        const [x, y] = key.split(',').map(Number);
+        board.setCell(x, y, {
+            paths: cell.paths.map(path => path.slice()),
+            rotation: cell.rotation,
+            tileId: cell.tileId,
+        });
+    }
+
+    return {
+        ...state,
+        board,
+        players: state.players.map(player => ({
+            ...player,
+            deathPosition: player.deathPosition ? { ...player.deathPosition } : player.deathPosition,
+        })),
+        npcs: state.npcs.map(npc => ({ ...npc })),
+        hands: Object.fromEntries(Object.entries(state.hands).map(([id, hand]) => [id, hand.slice()])),
+        tileDrawPile: state.tileDrawPile.slice(),
+        log: state.log.slice(),
+        variants: state.variants.filter(variant => variant !== AvoidFatalPlayVariant),
+        activeResolution: null,
+        pendingBonusAction: null,
+    };
+}
+
+function isLegalSafePlacement(state, player, tileDef, x, y, rotation) {
+    const simulation = cloneStateForPlacementCheck(state);
+    const result = placeTile(simulation, tileDef, rotation, player.id);
+    if (result.error) return false;
+
+    while (simulation.pendingBonusAction && simulation.activeResolution) skipBonus(simulation);
+    const simulatedPlayer = simulation.players.find(candidate => candidate.id === player.id);
+    return !!simulatedPlayer?.alive;
+}
+
+function wouldPlacementEliminate(state, player, tileDef, x, y, rotation) {
+    const simulation = cloneStateForPlacementCheck(state);
+    const result = placeTile(simulation, tileDef, rotation, player.id);
+    if (result.error) return false;
+
+    while (simulation.pendingBonusAction && simulation.activeResolution) skipBonus(simulation);
+    const simulatedPlayer = simulation.players.find(candidate => candidate.id === player.id);
+    return !simulatedPlayer?.alive;
 }
 
 function getNeighboringCell(state, position, cell) {
@@ -602,8 +742,24 @@ function advanceResolution(state) {
         const p = exitPoint % 2;
         let nb = getNeighboringCell(state, cur, cell);
 
-        // No neighboring tile means the token is dead
+        // No neighboring tile means the token is dead. Give variants the same
+        // chance to react as when the token crosses into an existing tile so
+        // an entered-then-exited final tile can still offer its rotation.
         if (!nb) {
+            const leftCell = { x: cur.x, y: cur.y };
+            const crossedCells = res.crossedCells.get(cur.token.id);
+            const cellKey = cur.x + ',' + cur.y;
+            if (!crossedCells.has(cellKey)) {
+                for (const v of state.variants) v.onTileCrossed?.(state, cur.token, leftCell);
+                crossedCells.add(cellKey);
+                if (state.pendingBonusAction) {
+                    cur.token.x = cur.x;
+                    cur.token.y = cur.y;
+                    cur.token.point = cur.point;
+                    res.onStep?.();
+                    return;
+                }
+            }
             applyResult(state, cur.token, {
                 status: 'eliminated', x: cur.x, y: cur.y, point: exitPoint,
             });
@@ -748,6 +904,7 @@ const svg = document.getElementById('board');
 const CELL = 64;
 const BOARD_FRAME = 24;
 const DEAD_TOKEN_OFFSET = 8;
+const PLAYER_NAME_STORAGE_KEY = 'tsurotations.playerName';
 
 /**
  * Collects the active variant set from the HTML configuration checkboxes.
@@ -755,9 +912,12 @@ const DEAD_TOKEN_OFFSET = 8;
  * @returns {object[]} Variant hook objects enabled in the UI.
  */
 function getVariantsFromUI() {
-    const variants = [];
+    // This safety rule is intentionally always enabled and has no UI toggle.
+    const variants = [AvoidFatalPlayVariant];
     if (document.getElementById('vWrap').checked) variants.push(TorusWrapVariant);
     if (document.getElementById('vRotatePass').checked) variants.push(RotateOnPassThroughVariant);
+    if (document.getElementById('vOnePerCell').checked) variants.push(OnePerCellVariant);
+    if (document.getElementById('vNoNeighbors').checked) variants.push(NoNeighborsVariant);
     return variants;
 }
 
@@ -767,13 +927,54 @@ function getVariantsFromUI() {
 function startNewGame() {
     const size = clamp(parseInt(document.getElementById('boardSize').value) || 6, 4, 12);
     const numPlayers = clamp(parseInt(document.getElementById('numPlayers').value) || 2, 2, 8);
-    state = newGame({ size, numPlayers, variants:getVariantsFromUI() });
     localPlayerId = 'p0';
+    state = newGame({ size, numPlayers, variants:getVariantsFromUI() });
+    const localPlayer = state.players.find(player => player.id === localPlayerId);
+    if (localPlayer) localPlayer.name = getPlayerName() || localPlayer.name;
+    assignClientPlayers();
     selectedTileIndex = null;
     selectedRotation = 0;
     bonusRotationSteps = 0;
     render();
     broadcastState();
+}
+
+/**
+ * Returns the local player's requested name, normalized to the input limit.
+ *
+ * @returns {string} The local player name or an empty string.
+ */
+function getPlayerName() {
+    return (playerNameInput.value || localStorage.getItem(PLAYER_NAME_STORAGE_KEY) || '')
+        .trim()
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .slice(0, 20);
+}
+
+function normalizePlayerName(name, fallback) {
+    const normalized = String(name).trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 20);
+    return normalized || fallback;
+}
+
+/**
+ * Applies the local player's name and sends it to the host when connected.
+ */
+function submitPlayerName() {
+    const name = getPlayerName();
+    if (!name || !state) return;
+    localStorage.setItem(PLAYER_NAME_STORAGE_KEY, name);
+    playerNameInput.value = name;
+
+    const player = state.players.find(candidate => candidate.id === localPlayerId);
+    if (!player) return;
+    player.name = name;
+
+    if (hostConnection && !isHost) {
+        sendAction({ type: 'setName', playerId: localPlayerId, name });
+    } else {
+        render();
+        broadcastState();
+    }
 }
 
 /**
@@ -800,6 +1001,35 @@ function currentPlayer() { return state.players[state.currentPlayerIndex]; }
  */
 function setNetworkStatus(message) {
     document.getElementById('networkStatus').textContent = message;
+    updateMultiplayerUI();
+}
+
+/**
+ * Updates controls whose availability depends on the current network role.
+ */
+function updateMultiplayerUI() {
+    const newGameButton = document.getElementById('newGameBtn');
+    const disconnectButton = document.getElementById('disconnectBtn');
+    const requiredPlayers = clamp(parseInt(document.getElementById('numPlayers').value) || 2, 2, 8);
+    const connectedPlayers = clientConnections.length + (isHost ? 1 : 0);
+    const isClient = !!hostConnection && !isHost;
+
+    newGameButton.disabled = isClient || (isHost && connectedPlayers < requiredPlayers);
+    disconnectButton.hidden = !isClient;
+}
+
+function lobbyStatus(connectedPlayers, totalPlayers) {
+    const waitingFor = Math.max(0, totalPlayers - connectedPlayers);
+    return waitingFor > 0
+        ? `Waiting for ${waitingFor} player${waitingFor === 1 ? '' : 's'}.`
+        : 'Waiting for host to start game';
+}
+
+function hostLobbyStatus(connectedPlayers, totalPlayers) {
+    const waitingFor = Math.max(0, totalPlayers - connectedPlayers);
+    return waitingFor > 0
+        ? `Waiting for ${waitingFor} player${waitingFor === 1 ? '' : 's'}.`
+        : 'All players connected. Ready to start game.';
 }
 
 /**
@@ -810,29 +1040,6 @@ function setNetworkStatus(message) {
  */
 function tileDefinition(id) {
     return TILE_DEFS.find(tile => tile.id === id) || null;
-}
-
-/**
- * Serializes the active variant list to their names.
- *
- * @returns {string[]} Variant names in use.
- */
-function variantIds() {
-    return state.variants.map(variant => variant.name);
-}
-
-/**
- * Rehydrates the enabled variant hook objects from their saved IDs.
- *
- * @param {string[]} ids - Variant IDs from a snapshot.
- * @returns {object[]} Reconstructed variant objects.
- */
-function variantsFromIds(ids) {
-    const available = {
-        'torus-wrap': TorusWrapVariant,
-        'rotate-on-passthrough': RotateOnPassThroughVariant,
-    };
-    return ids.map(id => available[id]).filter(Boolean);
 }
 
 /**
@@ -908,14 +1115,52 @@ function deserializeState(snapshot) {
  * @param {object} connection - Active peer connection.
  */
 function sendSnapshot(connection) {
-    if (connection.open) connection.send({ type: 'state', state: serializeState() });
+    if (connection.open) connection.send({
+        type: 'state',
+        state: serializeState(),
+        connectedPlayers: clientConnections.length + 1,
+    });
+}
+
+function broadcastLobbyStatus() {
+    if (!isHost) return;
+    const totalPlayers = state ? state.players.length : clamp(parseInt(document.getElementById('numPlayers').value) || 2, 2, 8);
+    const connectedPlayers = clientConnections.length + 1;
+    const message = { type: 'lobby', connectedPlayers, totalPlayers };
+    for (const entry of clientConnections) {
+        if (entry.connection.open) entry.connection.send(message);
+    }
+    setNetworkStatus(hostLobbyStatus(connectedPlayers, totalPlayers));
+}
+
+/**
+ * Assigns connected clients to player slots in the current game.
+ */
+function assignClientPlayers() {
+    if (!state) return;
+
+    const availablePlayers = state.players.filter(player => player.id !== localPlayerId);
+    clientConnections.forEach((entry, index) => {
+        const player = availablePlayers[index];
+        if (!player) {
+            entry.connection.send({ type: 'error', message: 'This game is full.' });
+            entry.connection.close();
+            return;
+        }
+
+        entry.playerId = player.id;
+        entry.connection.playerId = player.id;
+        if (entry.name) player.name = normalizePlayerName(entry.name, player.name);
+        entry.connection.send({ type: 'assigned', playerId: player.id });
+    });
+    clientConnections = clientConnections.filter(entry => entry.connection.open !== false);
 }
 
 /**
  * Broadcasts the serialized state to all connected clients.
  */
 function broadcastState() {
-    if (!isHost) return;
+    if (!isHost || !state) return;
     snapshotVersion++;
     for (const entry of clientConnections) sendSnapshot(entry.connection);
     render();
@@ -929,6 +1174,28 @@ function closePeer() {
     peer = null;
     hostConnection = null;
     clientConnections = [];
+    updateMultiplayerUI();
+}
+
+/**
+ * Clears the local game and transient UI state without changing the network role.
+ */
+function destroyLocalGame() {
+    state = null;
+    localPlayerId = 'p0';
+    snapshotVersion = 0;
+    selectedTileIndex = null;
+    selectedRotation = 0;
+    bonusRotationSteps = 0;
+    render();
+}
+
+function disconnectFromGame() {
+    closePeer();
+    isHost = false;
+    destroyLocalGame();
+    document.getElementById('hostCode').textContent = '';
+    setNetworkStatus('Local game');
 }
 
 /**
@@ -941,22 +1208,22 @@ function startHosting() {
     }
     closePeer();
     isHost = true;
-    startNewGame();
     peer = new Peer();
     setNetworkStatus('Creating host code...');
     peer.on('open', id => {
         document.getElementById('hostCode').textContent = `Share this host code: ${id}`;
-        setNetworkStatus('Hosting. Waiting for players.');
+        broadcastLobbyStatus();
     });
     peer.on('connection', connection => {
         connection.on('data', message => handleHostMessage(connection, message));
         connection.on('close', () => {
             clientConnections = clientConnections.filter(entry => entry.connection !== connection);
-            setNetworkStatus('Hosting. A player disconnected.');
+            broadcastLobbyStatus();
         });
         connection.on('error', () => setNetworkStatus('A player connection failed.'));
     });
     peer.on('error', error => setNetworkStatus(`Network error: ${error.type || 'connection failed'}`));
+    state = null;
 }
 
 /**
@@ -973,26 +1240,30 @@ function handleHostMessage(connection, message) {
         // If the player has already joined, do nothing
         if (clientConnections.some(entry => entry.connection === connection)) return;
 
-        // Find first player that is not already connected
-        const taken = new Set(['p0', ...clientConnections.map(entry => entry.playerId)]);
-        const player = state.players.find(candidate => !taken.has(candidate.id));
-        if (!player) {
-            connection.send({ type: 'error', message: 'This game is full.' });
-            connection.close();
-            return;
-        }
-
         // Add new player to the client connections
-        clientConnections.push({ connection, playerId: player.id });
-        connection.playerId = player.id;
-        connection.send({ type: 'assigned', playerId: player.id });
-        sendSnapshot(connection);
-        setNetworkStatus(`${clientConnections.length} friend${clientConnections.length === 1 ? '' : 's'} connected.`);
+        clientConnections.push({
+            connection,
+            playerId: null,
+            name: typeof message.name === 'string' ? message.name : '',
+        });
+        if (state) {
+            assignClientPlayers();
+        }
+        broadcastLobbyStatus();
+        broadcastState();
         return;
     }
 
     // Disregard message if player IDs don't match
     if (connection.playerId !== message.playerId) return;
+
+    if (message.type === 'setName') {
+        const player = state.players.find(candidate => candidate.id === message.playerId);
+        if (!player || typeof message.name !== 'string') return;
+        player.name = normalizePlayerName(message.name, player.name);
+        broadcastState();
+        return;
+    }
 
     // Place a tile in front of the current player
     if (message.type === 'place') {
@@ -1082,17 +1353,20 @@ function joinGame() {
         return;
     }
     closePeer();
+    destroyLocalGame();
     isHost = false;
     peer = new Peer();
     setNetworkStatus('Connecting to host...');
     peer.on('open', () => {
         hostConnection = peer.connect(hostId);
         hostConnection.on('open', () => {
-            hostConnection.send({ type: 'join' });
+            hostConnection.send({ type: 'join', name: getPlayerName() });
             setNetworkStatus('Connected. Waiting for the host state.');
         });
         hostConnection.on('data', message => {
-            if (message.type === 'assigned') {
+            if (message.type === 'lobby') {
+                setNetworkStatus(lobbyStatus(message.connectedPlayers, message.totalPlayers));
+            } else if (message.type === 'assigned') {
                 localPlayerId = message.playerId;
             } else if (message.type === 'state' && message.state.version >= snapshotVersion) {
                 snapshotVersion = message.state.version;
@@ -1100,7 +1374,7 @@ function joinGame() {
                 selectedTileIndex = null;
                 selectedRotation = 0;
                 bonusRotationSteps = 0;
-                setNetworkStatus('Connected to host.');
+                setNetworkStatus(lobbyStatus(message.connectedPlayers, message.state.players.length));
                 render();
             } else if (message.type === 'error') {
                 setNetworkStatus(message.message);
@@ -1125,6 +1399,11 @@ function sendAction(message) {
  * Re-renders the full game UI from the current state.
  */
 function render() {
+    updateMultiplayerUI();
+    document.querySelectorAll('.gameSurface').forEach(element => {
+        element.hidden = !state;
+    });
+    if (!state) return;
     renderBoard();
     renderHand();
     renderBonus();
@@ -1141,7 +1420,11 @@ function renderTurnBanner() {
     if (state.gameOver) { el.textContent = state.log[state.log.length-1] || 'Game over'; return; }
     const p = currentPlayer();
     const suffix = state.pendingBonusAction && localPlayerCanSeeBonus() ? ' — choose a tile to rotate' : '';
-    el.innerHTML = `<span style="color:${p.color}">●</span> ${p.name}'s turn${suffix}`;
+    el.innerHTML = '';
+    const marker = document.createElement('span');
+    marker.style.color = p.color;
+    marker.textContent = '●';
+    el.append(marker, ` ${p.name}'s turn${suffix}`);
 }
 
 /**
@@ -1155,13 +1438,28 @@ function renderPlayers() {
         const isActive = p.id === currentPlayer()?.id && !state.gameOver;
         const isYou = p.id === localPlayerId;
         row.className = 'playerRow' + (p.alive ? '' : ' dead') + (isActive ? ' active' : '') + (isYou ? ' you' : '');
-        row.innerHTML = `<span class="swatch" style="background:${p.color}"></span><span class="playerName">${p.name}</span>${isYou ? '<span class="playerBadge">you</span>' : ''}`;
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.background = p.color;
+        const name = document.createElement('span');
+        name.className = 'playerName';
+        name.textContent = p.name;
+        row.append(swatch, name);
+        if (isYou) {
+            const badge = document.createElement('span');
+            badge.className = 'playerBadge';
+            badge.textContent = 'you';
+            row.appendChild(badge);
+        }
         el.appendChild(row);
     }
     for (const n of state.npcs) {
         const row = document.createElement('div');
         row.className = 'playerRow' + (n.alive? '' : ' dead');
-        row.innerHTML = `<span class="swatch" style="background:${n.color}"></span>${n.name} (NPC)`;
+        const swatch = document.createElement('span');
+        swatch.className = 'swatch';
+        swatch.style.background = n.color;
+        row.append(swatch, `${n.name} (NPC)`);
         el.appendChild(row);
     }
 }
@@ -1357,8 +1655,14 @@ function renderBoard() {
 
             const pickerId = state.players[state.setupPickIndex]?.id;
             const networked = !!(isHost || hostConnection);
-            const canPick = !networked || pickerId === localPlayerId; // in local-only games, allow any local click; in networked games, only the assigned client may pick
+            let canPick = !networked || pickerId === localPlayerId; // in local-only games, allow any local click; in networked games, only the assigned client may pick
             const occupant = state.players.find(p => p.startIndex === i);
+
+            for (const v of state.variants)  {
+                if ("onBeforeStartingPosition" in v && typeof(v.onBeforeStartingPosition) === "function")
+                    if (!v.onBeforeStartingPosition(state, spot)) canPick = false;
+            }
+
             if (canPick && !occupant) {
                 s += '<g class="perim"' + ' onclick="chooseStartingPosition(' + i + ')"' + '>';
                 s += `<circle cx="${px}" cy="${py}" r="14" fill="transparent" pointer-events="all"/>`;
@@ -1461,10 +1765,16 @@ document.getElementById('newGameBtn').onclick = () => {
         setNetworkStatus('Only the host can start a new game.');
         return;
     }
+    if (isHost && clientConnections.length + 1 < clamp(parseInt(document.getElementById('numPlayers').value) || 2, 2, 8)) {
+        setNetworkStatus(lobbyStatus(clientConnections.length + 1, clamp(parseInt(document.getElementById('numPlayers').value) || 2, 2, 8)));
+        return;
+    }
     startNewGame();
 };
 document.getElementById('hostBtn').onclick = startHosting;
 document.getElementById('joinBtn').onclick = joinGame;
+document.getElementById('disconnectBtn').onclick = disconnectFromGame;
+document.getElementById('numPlayers').addEventListener('input', updateMultiplayerUI);
 document.getElementById('rotateBtnLeft').onclick = () => {
     if (selectedTileIndex === null) return;
     selectedRotation = (selectedRotation + 3) % 4;
@@ -1549,4 +1859,84 @@ document.getElementById('bonusSkipBtn').onclick = () => {
     broadcastState(); // was previously missing here — clients never learned the host's own bonus choice
 };
 
-startNewGame();
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsMenu = document.getElementById('settingsMenu');
+
+function closeSettingsMenu() {
+    settingsMenu.hidden = true;
+    settingsBtn.setAttribute('aria-expanded', 'false');
+}
+
+settingsBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const isOpen = !settingsMenu.hidden;
+    settingsMenu.hidden = isOpen;
+    settingsBtn.setAttribute('aria-expanded', String(!isOpen));
+});
+
+settingsMenu.addEventListener('click', (event) => {
+    const menuItem = event.target.closest('[role="menuitem"]');
+    if (!menuItem) return;
+
+    const targetId = menuItem.dataset.menuTarget;
+    if (targetId) {
+        document.getElementById(targetId).scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } else if (menuItem.id === 'menuNewGameBtn') {
+        document.getElementById('newGameBtn').click();
+    }
+    closeSettingsMenu();
+});
+
+document.addEventListener('click', (event) => {
+    if (!event.target.closest('.dropdown')) closeSettingsMenu();
+});
+
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        closeSettingsMenu();
+        settingsBtn.focus();
+    }
+});
+
+const playerNameInput = document.getElementById("playerNameInput");
+playerNameInput.value = localStorage.getItem(PLAYER_NAME_STORAGE_KEY) || "";
+playerNameInput.addEventListener("keydown", function(event) {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        submitPlayerName();
+    }
+});
+
+const numPlayersInput = document.getElementById("numPlayers");
+const boardSizeInput = document.getElementById("boardSize");
+const vOnePerCellCheckBox = document.getElementById("vOnePerCell");
+const vNoNeighborsCheckbox = document.getElementById("vNoNeighbors");
+
+function updateNoNeighborsAvailability() {
+    const boardSize = clamp(parseInt(boardSizeInput.value) || 6, 4, 12);
+    const numPlayers = clamp(parseInt(numPlayersInput.value) || 2, 2, 8);
+    const edgeCells = 4 * boardSize - 4;
+    const maxPlayers = Math.floor((edgeCells + 2) / 3);
+    const unavailable = numPlayers > maxPlayers;
+
+    vNoNeighborsCheckbox.disabled = unavailable;
+    if (unavailable) {
+        vNoNeighborsCheckbox.checked = false;
+        vOnePerCellCheckBox.disabled = false;
+    }
+}
+
+numPlayersInput.addEventListener("input", updateNoNeighborsAvailability);
+boardSizeInput.addEventListener("input", updateNoNeighborsAvailability);
+
+vNoNeighborsCheckbox.addEventListener("click", function(event) {
+    if (event.target.checked) {
+        vOnePerCellCheckBox.checked = true;
+        vOnePerCellCheckBox.disabled = true;
+    }
+    else {
+        vOnePerCellCheckBox.disabled = false;
+    }
+});
+
+updateNoNeighborsAvailability();
