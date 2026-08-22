@@ -40,8 +40,16 @@
       <div><label>Players</label><input id="numPlayers" type="number" min="2" max="8" value="2"></div>
     </div>
     <div class="checkbox-wrapper" style="margin-top: 10px; display: flex; flex-direction: column; gap: 6px;">
-      <input class="substituted" type="checkbox" id="vWrap">
-      <label for="vWrap"> Torus wrap</label>
+      <div class="row">
+        <div class="rowLeft">
+          <input class="substituted" type="checkbox" id="vWrap">
+          <label for="vWrap"> Torus wrap</label>
+        </div>
+        <div class="rowRight">
+          <label for="numNinjas">Ninjas</label>
+          <input id="numNinjas" type="number" min="1" max="20" value="8">
+        </div>
+      </div>
       <input class="substituted" type="checkbox" id="vRotatePass" checked>
       <label for="vRotatePass"> Rotations</label>
       <input class="substituted" type="checkbox" id="vReplacements">

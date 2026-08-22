@@ -213,46 +213,87 @@ const TorusWrapVariant = {
     modifyBoardConfig(config) { config.wrap = true; }
 };
 
-const NpcWandererVariant = {
-    name: 'npc-wanderer',
+const NinjasVariant = {
+    name: 'ninjas',
     /**
-     * Spawns a single NPC token near the midpoint of the perimeter.
-     *
-     * @param {object} state - Active game state.
+     * 
+     * @param {object} state - Active game state
      */
     setup(state) {
-        // Drop one NPC token roughly in the middle of the perimeter list.
-        const spot = state.perimeter[Math.floor(state.perimeter.length / 2)];
-        state.npcs.push({
-            id: 'npc-1', name: 'Wanderer', isNPC: true, alive: true, color: '#9aa4b6',
-            x: spot.outsideX, y: spot.outsideY, point: spot.point ?? (spot.side * 2 + 1),
-            entryX: spot.x, entryY: spot.y, startIndex: Math.floor(state.perimeter.length / 2),
+        const ninjas = [];
+
+        const maxNinjas = state.board.width * state.board.height * 8;
+        if (state.numNinjas > maxNinjas) {
+            console.error(`Too many ninjas: ${state.numNinjas}/${maxNinjas}`);
+            state.numNinjas = maxNinjas;
+        }
+
+        while (ninjas.length < state.numNinjas) {
+            const x = Math.floor(Math.random() * state.board.width);
+            const y = Math.floor(Math.random() * state.board.height);
+            const point = Math.floor(Math.random() * 8);
+            const pos = { x: x, y: y, point: point }
+            if (!ninjas.includes(pos)) ninjas.push(pos);
+        }
+
+        ninjas.forEach((pos, index) => {
+            const spot = resolveStartingSpot(state, pos);
+            state.npcs.push({
+                id: `ninja-${index}`, name: 'Ninja', isNPC: true, alive: true, color: '#000000', stroke: '#ffffff',
+                x: null, y: null, point: null,
+                entryX: spot.x, entryY: spot.y, entryPoint: spot.point, startIndex: null,
+                standX: spot.standX, standY: spot.standY, facePoint: spot.facePoint,
+            });
         });
     }
-};
+}
 
 const OnePerCellVariant = {
     name: 'one-player-per-cell',
     /**
-     * Return false if another player is already on this cell
-     * 
-     * @param {Number} state - Active game state
-     * @param {Number} spot - starting position on the perimeter (0-4)
+     * Return false if another player is already on this cell.
+     *
+     * On a wrapped board there's no "outside" — a waiting token is drawn
+     * resting on a real, shared board cell (spot.standX/standY), and several
+     * different entry points (spot.x/spot.y) can all resolve to that same
+     * stand cell. So the thing that must be unique per player is the stand
+     * cell itself, not any one entry-point marker. On a non-wrapped board
+     * the stand position is always off-board and unique per marker anyway,
+     * so the original entry-cell check still applies there.
+     *
+     * @param {object} state - Active game state
+     * @param {{x:number,y:number,standX:number,standY:number}} spot - Candidate starting spot
      */
     onBeforeStartingPosition(state, spot) {
-        return !state.players.find(p => p?.entryX === spot.x && p?.entryY === spot.y);
+        if (state.board.wrap) {
+            return !state.players.some(p => p?.standX === spot.standX && p?.standY === spot.standY);
+        }
+        return !state.players.some(p => p?.entryX === spot.x && p?.entryY === spot.y);
     }
 };
 
 const NoNeighborsVariant = {
     name: 'no-neighbors',
     /**
-     * Return false if another player is already on a neighboring cell
-     * 
-     * @param {Number} state - Active game state
-     * @param {Number} spot - starting position on the perimeter (0-4)
+     * Return false if another player is already on this cell or a cell
+     * orthogonally adjacent to it. See OnePerCellVariant for why wrapped
+     * boards key off the shared stand cell rather than the entry point.
+     *
+     * @param {object} state - Active game state
+     * @param {{x:number,y:number,standX:number,standY:number}} spot - Candidate starting spot
      */
     onBeforeStartingPosition(state, spot) {
+        if (state.board.wrap) {
+            const cx = spot.standX, cy = spot.standY;
+            if (state.players.some(p => p?.standX === cx && p?.standY === cy)) return false;
+            for (let side = 0; side < 4; side++) {
+                const neighbor = state.board.neighbor(cx, cy, side);
+                if (neighbor && state.players.some(p => p?.standX === neighbor.x && p?.standY === neighbor.y)) {
+                    return false;
+                }
+            }
+            return true;
+        }
         for (let side = 0; side < 4; side++) {
             const neighbor = state.board.neighbor(spot.x, spot.y, side);
             if (neighbor && state.players.some(p =>
@@ -368,6 +409,7 @@ function variantIds() {
 function variantsFromIds(ids) {
     const available = {
         'torus-wrap': TorusWrapVariant,
+        'ninjas': NinjasVariant,
         'rotate-on-passthrough': RotateOnPassThroughVariant,
         'replacements': replacementsVariant,
         'one-player-per-cell': OnePerCellVariant,
@@ -422,7 +464,7 @@ function buildPerimeter(width, height) {
  * @returns {object} The newly created state object.
  */
 function newGame(opts) {
-    const { size, numPlayers, variants } = opts;
+    const { size, numPlayers, variants, numNinjas } = opts;
     const activeVariants = variants;
     const boardConfig = { wrap: false };
     for (const v of activeVariants) v.modifyBoardConfig?.(boardConfig);
@@ -435,8 +477,16 @@ function newGame(opts) {
     for (let i = 0; i < numPlayers; i++) {
         // Starting positions are chosen by players during setup; initially unset.
         players.push({
-            id: 'p' + i, name: 'Player ' + (i + 1), color: PLAYER_COLORS[i % PLAYER_COLORS.length],
-            alive: true, x: null, y: null, point: null, entryX: null, entryY: null, startIndex: null,
+            id: 'p' + i, name: 'Player ' + (i + 1), color: PLAYER_COLORS[i % PLAYER_COLORS.length], stroke: '#000000',
+            // x/y/point: the single authoritative anchor (tile + entry point on it).
+            // null until this token has genuinely entered a tile.
+            alive: true, x: null, y: null, point: null,
+            // entryX/entryY/entryPoint: the cell+point this token is heading for while
+            // it hasn't entered yet (its "frontier" before it has a real anchor).
+            entryX: null, entryY: null, entryPoint: null, startIndex: null,
+            // standX/standY/facePoint: rendering-only marker position for the waiting
+            // token (see resolveStartingSpot) — never read by game logic.
+            standX: null, standY: null, facePoint: null,
         });
     }
 
@@ -446,6 +496,7 @@ function newGame(opts) {
         perimeter,
         players,
         npcs: [],
+        numNinjas: numNinjas,
         variants: activeVariants,
         currentPlayerIndex: 0,
         gameOver: false,
@@ -570,20 +621,18 @@ function advanceTurn(state) {
 // it entered that tile at), works out which cell needs the next tile.
 // Recomputed live every time it's needed — if the anchor tile gets rotated
 // (by anyone, at any point), the frontier this token is heading toward can
-// shift right along with it. For a token that hasn't entered any tile yet
-// (fresh spawn), the "frontier" is just its own spawn cell.
+// shift right along with it. A token's x/y is null until it has genuinely
+// entered a tile, so "hasn't started yet" and "anchored to a real tile" can
+// never be confused with each other, on wrapped or unwrapped boards alike.
 function frontierOf(state, token) {
-    // If a player hasn't picked a starting position yet, there's no frontier.
-    if (token.x === null || token.x === undefined) return null;
-    const cell = state.board.getCell(token.x, token.y);
-    if (!cell) {
-        if (token.entryX === null || token.entryX === undefined) return null;
+    if (token.x === null || token.x === undefined) {
+        // Not yet on the board — the frontier is just the cell it's waiting to enter.
+        if (token.entryX === null || token.entryX === undefined) return null; // hasn't even picked a starting spot
         return { x: token.entryX, y: token.entryY };
     }
-    const exitPoint = tileExit(cell.paths, token.point);
-    const side = Math.floor(exitPoint / 2);
-    let nb = getNeighboringCell(state, token, cell);
-    return nb; // null only if this token should already have fallen off — shouldn't happen for a token that's alive and waiting
+    const cell = state.board.getCell(token.x, token.y);
+    if (!cell) return null; // shouldn't happen: an anchored token's cell is always a placed tile
+    return getNeighboringCell(state, token, cell); // null only if this token should already have fallen off
 }
 
 /**
@@ -695,15 +744,32 @@ function wouldPlacementEliminate(state, player, tileDef, x, y, rotation) {
     return !simulatedPlayer?.alive;
 }
 
-function getNeighboringCell(state, position, cell) {
-    const exitPoint = tileExit(cell.paths, position.point);
-    const side = Math.floor(exitPoint / 2);
-    let nb = state.board.neighbor(position.x, position.y, side);
+/**
+ * Steps from (x,y) across the given side to the neighboring cell, honoring
+ * any variant's getNeighbor override. Shared by getNeighboringCell (which
+ * derives `side` from a placed tile's exit point) and starting-spot
+ * resolution (which derives `side` directly from the picked point, since
+ * there's no tile yet to exit from).
+ *
+ * @param {object} state - Current game state.
+ * @param {number} x - Cell column.
+ * @param {number} y - Cell row.
+ * @param {number} side - Side index to step across.
+ * @returns {{x:number, y:number, side:number}|null} Neighbor info or null off a non-wrapped edge.
+ */
+function neighborAcrossSide(state, x, y, side) {
+    let nb = state.board.neighbor(x, y, side);
     for (const v of state.variants) if (v.getNeighbor) {
-        const override = v.getNeighbor(state.board, position.x, position.y, side);
+        const override = v.getNeighbor(state.board, x, y, side);
         if (override !== undefined) nb = override;
     }
     return nb;
+}
+
+function getNeighboringCell(state, position, cell) {
+    const exitPoint = tileExit(cell.paths, position.point);
+    const side = Math.floor(exitPoint / 2);
+    return neighborAcrossSide(state, position.x, position.y, side);
 }
 
 // --- Step-by-step movement resolver -----------------------------------
@@ -763,14 +829,17 @@ function advanceResolution(state) {
         const cell = state.board.getCell(cur.x, cur.y); // always real, except a token that has never entered a tile
 
         if (!cell) {
-            // Wrapped boards report every coordinate as in-bounds, including
-            // the exterior coordinate used by a token waiting to enter.
+            // cur.x/y is null for a token that hasn't entered any tile yet. If its
+            // entry cell now has a tile (which is why it's in this resolution's
+            // token list at all), it genuinely enters: adopt that cell as its real
+            // anchor, using entryPoint as the point it enters through.
             const entryCell = cur.token.entryX !== null && cur.token.entryX !== undefined
                 ? { x: cur.token.entryX, y: cur.token.entryY }
                 : null;
             if (entryCell && state.board.getCell(entryCell.x, entryCell.y)) {
                 cur.x = entryCell.x;
                 cur.y = entryCell.y;
+                cur.point = cur.token.entryPoint;
                 res.onStep?.();
                 continue;
             }
@@ -978,6 +1047,18 @@ function rotateCell(state, x, y, rotationSteps) {
         current.point = (current.point + shift) % TOTAL_POINTS;
         current.token.point = current.point;
     }
+
+    // Tokens that haven't entered any tile yet (x/y still null) are drawn
+    // resting on their standX/standY cell (see resolveStartingSpot / render).
+    // If that display cell is the one just rotated, the token's facePoint
+    // needs to turn with it too, or the marker visibly stays put while the
+    // tile spins underneath it.
+    for (const token of [...state.players, ...state.npcs]) {
+        if (token.alive && (token.x === null || token.x === undefined)
+            && token.standX === x && token.standY === y) {
+            token.facePoint = (token.facePoint + shift) % TOTAL_POINTS;
+        }
+    }
 }
 
 /**
@@ -1023,6 +1104,7 @@ let localPlayerId = 'p0';
 let snapshotVersion = 0;
 
 const svg = document.getElementById('board');
+setupBoardPanning();
 const boardWrap = document.getElementById('boardWrap');
 const BASE_CELL_SIZE = 64;
 const BASE_BOARD_FRAME = 17;
@@ -1040,7 +1122,7 @@ function getVariantsFromUI() {
     // This safety rule is intentionally always enabled and has no UI toggle.
     //const variants = [AvoidFatalPlayVariant];
     const variants = [];
-    if (document.getElementById('vWrap').checked) variants.push(TorusWrapVariant);
+    if (document.getElementById('vWrap').checked) variants.push(TorusWrapVariant, NinjasVariant);
     if (document.getElementById('vRotatePass').checked) variants.push(RotateOnPassThroughVariant);
     if (document.getElementById('vReplacements').checked) variants.push(replacementsVariant);
     if (document.getElementById('vOnePerCell').checked) variants.push(OnePerCellVariant);
@@ -1054,8 +1136,9 @@ function getVariantsFromUI() {
 function startNewGame() {
     const size = clamp(parseInt(document.getElementById('boardSize').value) || 6, 4, 12);
     const numPlayers = clamp(parseInt(document.getElementById('numPlayers').value) || 2, 2, 8);
+    const numNinjas = clamp(parseInt(document.getElementById('numNinjas').value) || 8, 1, 20);
     localPlayerId = 'p0';
-    state = newGame({ size, numPlayers, variants:getVariantsFromUI() });
+    state = newGame({ size, numPlayers, variants:getVariantsFromUI(), numNinjas });
     const localPlayer = state.players.find(player => player.id === localPlayerId);
     if (localPlayer) localPlayer.name = getPlayerName() || localPlayer.name;
     assignClientPlayers();
@@ -1451,15 +1534,16 @@ function handleHostMessage(connection, message) {
         else broadcastState();
     }
 
-    // A client requests to pick a perimeter starting position during setup.
+    // A client requests to pick a starting position during setup — either a
+    // perimeter index (non-wrapped board) or an {x,y,point} spot (wrapped board).
     else if (message.type === 'chooseStart') {
 
         // Abort if the game is not selecting starting positions
         if (!state || !state.selectingStartingPositions) return;
 
-        // Get the perimeter index that was selected
-        const perimIndex = message.perimIndex;
-        if (!Number.isInteger(perimIndex) || perimIndex < 0 || perimIndex >= state.perimeter.length) return;
+        const pick = Number.isInteger(message.perimIndex) ? message.perimIndex : message.spot;
+        const spot = resolveStartingSpot(state, pick);
+        if (!spot) return;
 
         // Get the current player
         const currentPick = state.setupPickIndex;
@@ -1469,25 +1553,17 @@ function handleHostMessage(connection, message) {
         // Verify that the current player is the one who picked this position
         if (!player || player.id !== message.playerId) return;
 
-        // Get the chosen position
-        const spot = state.perimeter[perimIndex];
-
         // Verify there isn't a player at that position already
-        if (state.players.find(p => p.startIndex === perimIndex)) return;
+        if (isStartingSpotTaken(state, spot)) return;
 
-        // Set the player's position
-        player.x = spot.outsideX; player.y = spot.outsideY; player.point = spot.point;
-        player.entryX = spot.x; player.entryY = spot.y; player.startIndex = perimIndex;
-
-        // Increment the pick index to the next player
-        state.setupPickIndex++;
-
-        // If all players have chosen, setup for the normal game
-        if (state.setupPickIndex >= state.players.length) {
-            state.selectingStartingPositions = false;
-            state.currentPlayerIndex = 0;
+        // Verify no active variant vetoes this spot
+        for (const v of state.variants) {
+            if ("onBeforeStartingPosition" in v && typeof v.onBeforeStartingPosition === "function") {
+                if (!v.onBeforeStartingPosition(state, spot)) return;
+            }
         }
 
+        applyStartingPick(state, player, spot);
         broadcastState();
     }
 
@@ -1606,7 +1682,8 @@ function renderActiveVariants() {
     const el = document.getElementById('activeVariants');
     el.innerHTML = '';
     const labels = {
-        'torus-wrap': 'Torus wrap',
+        'torus-wrap': 'Torus wrap (shift + drag to pan)',
+        'ninjas': 'Ninjas',
         'rotate-on-passthrough': 'Rotations',
         'replacements': 'Replacements',
         'one-player-per-cell': 'One player per cell (start)',
@@ -1664,15 +1741,6 @@ function renderPlayers() {
             badge.textContent = 'you';
             row.appendChild(badge);
         }
-        el.appendChild(row);
-    }
-    for (const n of state.npcs) {
-        const row = document.createElement('div');
-        row.className = 'playerRow' + (n.alive? '' : ' dead');
-        const swatch = document.createElement('span');
-        swatch.className = 'swatch';
-        swatch.style.background = n.color;
-        row.append(swatch, `${n.name} (NPC)`);
         el.appendChild(row);
     }
 }
@@ -1929,12 +1997,17 @@ function renderHand() {
  * Positions the pending bonus-rotation controls over the paused tile.
  */
 function renderBonus() {
-    const controls = document.getElementById('bonusControls');
+    const template = document.getElementById('bonusControls');
     const pending = state.pendingBonusAction;
     const visible = pending?.rotationPending
         && !pending?.replacementPending
         && localPlayerCanSeeBonus();
-    controls.hidden = !visible;
+
+    // Remove any previously created instances
+    document.querySelectorAll('.bonusControlsInstance').forEach(el => el.remove());
+
+    // Hide the template (we'll create per-copy instances)
+    template.hidden = true;
     if (!visible) return;
 
     const { x, y } = pending.cell;
@@ -1942,16 +2015,194 @@ function renderBonus() {
     const wrapRect = boardWrap.getBoundingClientRect();
     const cellSize = renderedCellSize;
     const boardFrame = BASE_BOARD_FRAME * cellSize / BASE_CELL_SIZE;
-    controls.style.setProperty('--bonus-cell-size', `${cellSize}px`);
-    controls.style.setProperty('--bonus-button-size', `${16 * cellSize / BASE_CELL_SIZE}px`);
-    controls.style.setProperty('--bonus-button-font-size', `${12 * cellSize / BASE_CELL_SIZE}px`);
-    controls.style.left = `${boardRect.left - wrapRect.left + boardFrame + x * cellSize}px`;
-    controls.style.top = `${boardRect.top - wrapRect.top + boardFrame + y * cellSize}px`;
+    const main = window.lastBoardMainOffset || { x: boardFrame, y: boardFrame, cellSize };
+
+    // Sizes applied to each instance via CSS variables
+    const btnSize = `${16 * cellSize / BASE_CELL_SIZE}px`;
+    const fontSize = `${12 * cellSize / BASE_CELL_SIZE}px`;
+    const cellSizeCss = `${cellSize}px`;
+
+    const isWrapped = !!state.board.wrap;
+    const minOx = isWrapped ? -1 : 0;
+    const maxOx = isWrapped ? 1 : 0;
+    const minOy = isWrapped ? -1 : 0;
+    const maxOy = isWrapped ? 1 : 0;
+
+    for (let oy = minOy; oy <= maxOy; oy++) {
+        for (let ox = minOx; ox <= maxOx; ox++) {
+            // find the SVG group corresponding to this copy and tile
+            const selector = `g.boardCopyCell[data-copy-ox="${ox}"][data-copy-oy="${oy}"][data-cell-x="${x}"][data-cell-y="${y}"]`;
+            const group = svg.querySelector(selector);
+            if (!group) continue;
+            const groupRect = group.getBoundingClientRect();
+
+            // compute left/top relative to boardWrap using the group's bounding rect
+            const left = groupRect.left - wrapRect.left;
+            const top = groupRect.top - wrapRect.top;
+
+            const inst = document.createElement('div');
+            inst.className = 'bonusControlsInstance';
+            inst.style.setProperty('--bonus-cell-size', cellSizeCss);
+            inst.style.setProperty('--bonus-button-size', btnSize);
+            inst.style.setProperty('--bonus-button-font-size', fontSize);
+            inst.style.left = `${left}px`;
+            inst.style.top = `${top}px`;
+            // Explicit size fallback to ensure correct pixel sizing
+            inst.style.width = `${groupRect.width}px`;
+            inst.style.height = `${groupRect.height}px`;
+
+            // create buttons
+            const leftBtn = document.createElement('button');
+            leftBtn.className = 'left secondary';
+            leftBtn.title = 'Rotate counter-clockwise';
+            leftBtn.setAttribute('aria-label', 'Rotate counter-clockwise');
+            leftBtn.textContent = '↺';
+            leftBtn.style.width = btnSize; leftBtn.style.height = btnSize; leftBtn.style.fontSize = fontSize; leftBtn.style.lineHeight = '1';
+            leftBtn.onclick = () => { bonusRotationSteps = (bonusRotationSteps + 3) % 4; render(); };
+
+            const rightBtn = document.createElement('button');
+            rightBtn.className = 'right secondary';
+            rightBtn.title = 'Rotate clockwise';
+            rightBtn.setAttribute('aria-label', 'Rotate clockwise');
+            rightBtn.textContent = '↻';
+            rightBtn.style.width = btnSize; rightBtn.style.height = btnSize; rightBtn.style.fontSize = fontSize; rightBtn.style.lineHeight = '1';
+            rightBtn.onclick = () => { bonusRotationSteps = (bonusRotationSteps + 1) % 4; render(); };
+
+            const skipBtn = document.createElement('button');
+            skipBtn.className = 'skip secondary';
+            skipBtn.title = 'Skip all rotations';
+            skipBtn.setAttribute('aria-label', 'Skip all rotations');
+            skipBtn.textContent = '×';
+            skipBtn.style.width = btnSize; skipBtn.style.height = btnSize; skipBtn.style.fontSize = fontSize; skipBtn.style.lineHeight = '1';
+            skipBtn.onclick = () => {
+                if (!state.pendingBonusAction || !localPlayerCanSeeBonus()) return;
+                if (hostConnection && !isHost) {
+                    sendAction({ type: 'bonus', playerId: localPlayerId, action: 'skip' });
+                    return;
+                }
+                skipBonus(state);
+                bonusRotationSteps = 0;
+                render();
+            };
+
+            const confirmBtn = document.createElement('button');
+            confirmBtn.className = 'confirm secondary';
+            confirmBtn.title = 'Confirm';
+            confirmBtn.setAttribute('aria-label', 'Confirm');
+            confirmBtn.textContent = '✓';
+            confirmBtn.style.width = btnSize; confirmBtn.style.height = btnSize; confirmBtn.style.fontSize = fontSize; confirmBtn.style.lineHeight = '1';
+            confirmBtn.onclick = () => {
+                if (!state.pendingBonusAction || !localPlayerCanSeeBonus()) return;
+                const { x: cx, y: cy } = state.pendingBonusAction.cell;
+                if (state.pendingBonusAction.rotationPending) {
+                    if (hostConnection && !isHost) {
+                        sendAction({ type: 'bonus', playerId: localPlayerId, action: 'rotate', steps: bonusRotationSteps });
+                        return;
+                    }
+                    resolveBonusRotate(state, cx, cy, bonusRotationSteps);
+                    selectedTileIndex = null;
+                    selectedRotation = 0;
+                    bonusRotationSteps = 0;
+                    render();
+                    broadcastState();
+                }
+            };
+
+            inst.appendChild(leftBtn);
+            inst.appendChild(rightBtn);
+            inst.appendChild(skipBtn);
+            inst.appendChild(confirmBtn);
+
+            boardWrap.appendChild(inst);
+        }
+    }
+}
+
+let pan = { x: 0, y: 0 }; // in board-local SVG units, only meaningful when wrapped
+let panDragging = false;
+let panLast = { x: 0, y: 0 };
+const WRAP_ZOOM_MARGIN_RATIO = 0.18; // how much of a neighboring board peeks in at rest — tune to taste
+
+function wrapPan(v, size) {
+    if (!size) return 0;
+    return ((v + size / 2) % size + size) % size - size / 2;
+}
+
+function setupBoardPanning() {
+    svg.addEventListener('pointerdown', (e) => {
+        if (!state.board.wrap || !e.shiftKey) return;
+        panDragging = true;
+        panLast = { x: e.clientX, y: e.clientY };
+        svg.setPointerCapture(e.pointerId);
+        e.preventDefault(); // stop this turning into a stray click on a cell underneath
+    });
+
+    svg.addEventListener('pointermove', (e) => {
+        if (!panDragging) return;
+        const ctm = svg.getScreenCTM();
+        if (!ctm) return;
+        const inv = ctm.inverse();
+        const p0 = svg.createSVGPoint(); p0.x = panLast.x; p0.y = panLast.y;
+        const p1 = svg.createSVGPoint(); p1.x = e.clientX; p1.y = e.clientY;
+        const local0 = p0.matrixTransform(inv);
+        const local1 = p1.matrixTransform(inv);
+        const dx = local1.x - local0.x;
+        const dy = local1.y - local0.y;
+        pan.x = wrapPan(pan.x - dx, lastBoardWidth);
+        pan.y = wrapPan(pan.y - dy, lastBoardHeight);
+        panLast = { x: e.clientX, y: e.clientY };
+        renderBoard();
+    });
+
+    const endDrag = () => { panDragging = false; };
+    svg.addEventListener('pointerup', endDrag);
+    svg.addEventListener('pointercancel', endDrag);
 }
 
 /**
- * Rebuilds the board SVG with tiles, targets, and tokens in their current positions.
+ * 
+ * @param {number} x - x-coordinate of the cell
+ * @param {number} y - y-coordinate of the cell
+ * @param {number} point - position on the cell (0-7)
+ * @param {number} cellSize - side length of the cell
+ * @param {number} gap - gap between the cell and the marker
+ * @param {number} offset - gap between the two markers on each cell edge
+ * @param {number} direction - facing into or out of the cell (1 or -1)
+ * @returns {object} - position and side for the marker to sit
  */
+function pointMarkerPosition(x, y, point, cellSize, gap, offset, direction = 1) {
+    const side = Math.floor(point / 2);
+    const g = gap * direction; // 1 = outward past the boundary (perimeter default), -1 = inset inside the cell
+    const cx = x * cellSize + cellSize / 2;
+    const cy = y * cellSize + cellSize / 2;
+    let px = cx, py = cy;
+    if (side === 0) {
+        px = cx + (point === 0 ? -offset : offset);
+        py = y * cellSize - g;
+    } else if (side === 1) {
+        px = x * cellSize + cellSize + g;
+        py = cy + (point === 2 ? -offset : offset);
+    } else if (side === 2) {
+        px = cx + (point === 4 ? offset : -offset);
+        py = y * cellSize + cellSize + g;
+    } else if (side === 3) {
+        px = x * cellSize - g;
+        py = cy + (point === 6 ? offset : -offset);
+    }
+    return { px, py, side };
+}
+
+let selectedStartCell = null;
+
+function handleStartCellClick(x, y) {
+    selectedStartCell = (selectedStartCell && selectedStartCell.x === x && selectedStartCell.y === y)
+        ? null // clicking the already-open cell again closes it
+        : { x, y };
+    renderBoard();
+}
+
+let lastBoardWidth = 0, lastBoardHeight = 0;
+
 function renderBoard() {
     const w = state.board.width, h = state.board.height;
     const boardStyles = getComputedStyle(boardWrap);
@@ -1968,171 +2219,329 @@ function renderBoard() {
     ));
     renderedCellSize = cellSize;
     const boardFrame = BASE_BOARD_FRAME * cellSize / BASE_CELL_SIZE;
-    const scale = cellSize / BASE_CELL_SIZE; // Scale of the entire game board and all pieces on it
-    const tokenOffset = 8 * scale; // Offset for tokens on the edge of the game board (start of game)
-    const tokenRadius = 7 * scale; // Token size
-    const tokenStrokeWidth = 1.5 * scale; // Token stroke width
-    const markerGap = 8 * scale; // Gap between starting position marker and game board
-    const markerOffset = 10 * scale; // Gap between two starting position markers on the same cell
+    const scale = cellSize / BASE_CELL_SIZE;
+    const tokenOffset = 8 * scale;
+    const tokenRadius = 7 * scale;
+    const tokenStrokeWidth = 1 * scale;
+    const markerGap = 8 * scale;
+    const markerOffset = 10 * scale;
     const markerRadius = 7 * scale;
     const markerStrokeWidth = 1 * scale;
     const boardWidth = w * cellSize;
     const boardHeight = h * cellSize;
     const cellCornerRadius = 7 * scale;
-    const svgWidth = boardWidth + boardFrame * 2;
-    const svgHeight = boardHeight + boardFrame * 2;
-    svg.setAttribute('width', svgWidth);
-    svg.setAttribute('height', svgHeight);
-    svg.setAttribute('viewBox', `0 0 ${svgWidth} ${svgHeight}`);
-    let s = '';
+
+    const isWrapped = !!state.board.wrap;
+    lastBoardWidth = boardWidth;
+    lastBoardHeight = boardHeight;
+
+    if (!isWrapped) {
+        pan.x = 0;
+        pan.y = 0;
+    }
+
+    // Zoomed-in viewBox: always just "one board + a sliver of neighbors", regardless
+    // of how many copies exist in the grid. Panning moves the world <g> inside this
+    // fixed viewport rather than resizing the SVG.
+    const zoomMarginX = isWrapped ? boardWidth * WRAP_ZOOM_MARGIN_RATIO : 0;
+    const zoomMarginY = isWrapped ? boardHeight * WRAP_ZOOM_MARGIN_RATIO : 0;
+    const fullSvgWidth = boardWidth + boardFrame * 2 + zoomMarginX * 2;
+    const fullSvgHeight = boardHeight + boardFrame * 2 + zoomMarginY * 2;
+    svg.setAttribute('width', fullSvgWidth);
+    svg.setAttribute('height', fullSvgHeight);
+    svg.setAttribute('viewBox', `0 0 ${fullSvgWidth} ${fullSvgHeight}`);
+
+    // Where the home (0,0) copy's local origin lands inside the SVG at rest (pan = 0).
+    const mainOffsetX = boardFrame + zoomMarginX;
+    const mainOffsetY = boardFrame + zoomMarginY;
+
+    // Effective on-screen position of the home board right now (after pan) — kept for
+    // any other UI (e.g. bonus controls) that positions itself against the board.
+    // NOTE: since this now shifts while dragging, anything reading it should re-run
+    // its positioning after each renderBoard() call, not just once.
+    window.lastBoardMainOffset = {
+        x: mainOffsetX - pan.x,
+        y: mainOffsetY - pan.y,
+        cellSize
+    };
 
     const target = state.gameOver ? null : frontierOf(state, currentPlayer());
     const pending = state.pendingBonusAction;
 
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const cell = state.board.getCell(x, y);
-            const isCurrentTarget = target && x === target.x && y === target.y && !cell;
-            const isReplacementPreview = pending?.replacementPending && selectedReplacementTile();
-            const isBonusTarget = cell && pending?.cell.x === x
-                && pending.cell.y === y && localPlayerCanSeeBonus()
-                && (!pending.replacementPending || isReplacementPreview);
-            s += `<g transform="translate(${boardFrame + x * cellSize},${boardFrame + y * cellSize})">`;
-            s += `<rect width="${cellSize}" height="${cellSize}" rx="${cellCornerRadius}" fill="${isCurrentTarget ? '#22314a' : '#1a1e26'}" stroke="var(--line)" stroke-width="1"/>`;
-            if (cell) {
-                let paths = cell.paths;
-                if (isBonusTarget && pending.rotationPending) {
-                    paths = rotateTilePaths(cell.paths, bonusRotationSteps);
+    const minOx = isWrapped ? -1 : 0;
+    const maxOx = isWrapped ? 1 : 0;
+    const minOy = isWrapped ? -1 : 0;
+    const maxOy = isWrapped ? 1 : 0;
+
+    let s = `<g class="world" transform="translate(${mainOffsetX - pan.x},${mainOffsetY - pan.y})">`;
+
+    for (let oy = minOy; oy <= maxOy; oy++) {
+        for (let ox = minOx; ox <= maxOx; ox++) {
+            s += `<g class="boardCopy" data-copy-ox="${ox}" data-copy-oy="${oy}" transform="translate(${ox * boardWidth},${oy * boardHeight})">`;
+
+            // --- cells (now local coords, no ox*boardWidth baked in) ---
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const cell = state.board.getCell(x, y);
+                    const isCurrentTarget = target && x === target.x && y === target.y && !cell;
+                    const isReplacementPreview = pending?.replacementPending && selectedReplacementTile();
+                    const isBonusTarget = cell && pending?.cell.x === x
+                        && pending.cell.y === y && localPlayerCanSeeBonus()
+                        && (!pending.replacementPending || isReplacementPreview);
+
+                    const tx = x * cellSize;
+                    const ty = y * cellSize;
+
+                    s += `<g class="boardCopyCell" data-copy-ox="${ox}" data-copy-oy="${oy}" data-cell-x="${x}" data-cell-y="${y}" transform="translate(${tx},${ty})">`;
+                    s += `<rect width="${cellSize}" height="${cellSize}" rx="${cellCornerRadius}" fill="${isCurrentTarget && !state.selectingStartingPositions ? '#22314a' : '#1a1e26'}" stroke="var(--line)" stroke-width="1"/>`;
+
+                    if (cell) {
+                        let paths = cell.paths;
+                        if (isBonusTarget && pending.rotationPending) {
+                            paths = rotateTilePaths(cell.paths, bonusRotationSteps);
+                        }
+                        if (isBonusTarget && pending.replacementPending) {
+                            const replacement = selectedReplacementTile();
+                            if (replacement) paths = rotateTilePaths(replacement.paths, selectedRotation);
+                        }
+                        const tileMarkup = tileSvgMarkup(paths, cellSize, cellCornerRadius, { x, y });
+                        s += isBonusTarget ? `<g class="tilePreview">${tileMarkup}</g>` : tileMarkup;
+                    }
+
+                    if (isCurrentTarget && selectedTileIndex !== null) {
+                        const preview = selectedPreviewCell(x, y);
+                        if (preview) s += `<g class="tilePreview">${tileSvgMarkup(preview.paths, cellSize, cellCornerRadius, { x, y })}</g>`;
+                    }
+
+                    s += `</g>`;
                 }
-                if (isBonusTarget && pending.replacementPending) {
-                    const replacement = selectedReplacementTile();
-                    if (replacement) paths = rotateTilePaths(replacement.paths, selectedRotation);
-                }
-                const tileMarkup = tileSvgMarkup(paths, cellSize, cellCornerRadius, { x, y });
-                s += isBonusTarget ? `<g class="tilePreview">${tileMarkup}</g>` : tileMarkup;
             }
-            if (isCurrentTarget && selectedTileIndex !== null) {
-                const preview = selectedPreviewCell(x, y);
-                if (preview) s += `<g class="tilePreview">${tileSvgMarkup(preview.paths, cellSize, cellCornerRadius, { x, y })}</g>`;
-            }
-            s += `</g>`;
+
+            s += `</g>`; // .boardCopy
         }
     }
 
-    const outerFramePath = `M ${cellCornerRadius} 0 H ${svgWidth - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${svgWidth} ${cellCornerRadius} V ${svgHeight - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${svgWidth - cellCornerRadius} ${svgHeight} H ${cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 0 ${svgHeight - cellCornerRadius} V ${cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${cellCornerRadius} 0 Z`;
-    const innerFramePath = `M ${boardFrame + cellCornerRadius} ${boardFrame} H ${boardFrame + boardWidth - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${boardFrame + boardWidth} ${boardFrame + cellCornerRadius} V ${boardFrame + boardHeight - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${boardFrame + boardWidth - cellCornerRadius} ${boardFrame + boardHeight} H ${boardFrame + cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${boardFrame} ${boardFrame + boardHeight - cellCornerRadius} V ${boardFrame + cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${boardFrame + cellCornerRadius} ${boardFrame} Z`;
-    s += `<path d="${outerFramePath} ${innerFramePath}" fill="#3a4150" fill-rule="evenodd"/>`;
+    s += `</g>`; // .world
 
-    // Render perimeter selection markers (outside the board) when selecting starting positions.
+    // Outer frame cutout: unwrapped only, drawn OUTSIDE the world <g> since it's a
+    // fixed viewport decoration, not something that should pan with the board.
+    if (!isWrapped) {
+        const outerFramePath = `M ${cellCornerRadius} 0 H ${fullSvgWidth - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${fullSvgWidth} ${cellCornerRadius} V ${fullSvgHeight - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${fullSvgWidth - cellCornerRadius} ${fullSvgHeight} H ${cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 0 ${fullSvgHeight - cellCornerRadius} V ${cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${cellCornerRadius} 0 Z`;
+        const innerFramePath = `M ${mainOffsetX + cellCornerRadius} ${mainOffsetY} H ${mainOffsetX + boardWidth - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${mainOffsetX + boardWidth} ${mainOffsetY + cellCornerRadius} V ${mainOffsetY + boardHeight - cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${mainOffsetX + boardWidth - cellCornerRadius} ${mainOffsetY + boardHeight} H ${mainOffsetX + cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${mainOffsetX} ${mainOffsetY + boardHeight - cellCornerRadius} V ${mainOffsetY + cellCornerRadius} A ${cellCornerRadius} ${cellCornerRadius} 0 0 1 ${mainOffsetX + cellCornerRadius} ${mainOffsetY} Z`;
+        s += `<path d="${outerFramePath} ${innerFramePath}" fill="#3a4150" fill-rule="evenodd"/>`;
+    }
+
+    // Re-open world <g> for perimeter markers + tokens so they pan/wrap identically.
+    s += `<g class="world" transform="translate(${mainOffsetX - pan.x},${mainOffsetY - pan.y})">`;
+
     if (state.selectingStartingPositions) {
-        for (let i = 0; i < state.perimeter.length; i++) {
-            const spot = state.perimeter[i]; // position on the perimeter
-            const side = spot.side; // side of the cell (0, 1, 2, 3)
-            const cx = boardFrame + spot.x * cellSize + cellSize / 2;
-            const cy = boardFrame + spot.y * cellSize + cellSize / 2;
-            let px = cx, py = cy;
-            const gap = markerGap;
-            const offset = markerOffset;
-            if (side === 0) {
-                px = cx + (spot.point === 0 ? -offset : offset);
-                py = boardFrame + spot.y * cellSize - gap;
-            } else if (side === 1) {
-                px = boardFrame + spot.x * cellSize + cellSize + gap;
-                py = cy + (spot.point === 2 ? -offset : offset);
-            } else if (side === 2) {
-                px = cx + (spot.point === 4 ? offset : -offset);
-                py = boardFrame + spot.y * cellSize + cellSize + gap;
-            } else if (side === 3) {
-                px = boardFrame + spot.x * cellSize - gap;
-                py = cy + (spot.point === 6 ? offset : -offset);
-            }
+        if (!isWrapped) {
+            selectedStartCell = null; // stale from a previous wrapped game, don't let it leak in
 
+            // --- unchanged: your existing fixed-perimeter marker rendering ---
+            for (let oy = minOy; oy <= maxOy; oy++) {
+                for (let ox = minOx; ox <= maxOx; ox++) {
+                    s += `<g transform="translate(${ox * boardWidth},${oy * boardHeight})">`;
+                    for (let i = 0; i < state.perimeter.length; i++) {
+                        const spot = state.perimeter[i];
+                        const { px, py } = pointMarkerPosition(spot.x, spot.y, spot.point, cellSize, markerGap, markerOffset);
+
+                        const pickerId = state.players[state.setupPickIndex]?.id;
+                        const networked = !!(isHost || hostConnection);
+                        let canPick = !networked || pickerId === localPlayerId;
+                        const occupant = state.players.find(p => p.startIndex === i);
+
+                        for (const v of state.variants) {
+                            if ("onBeforeStartingPosition" in v && typeof(v.onBeforeStartingPosition) === "function")
+                                if (!v.onBeforeStartingPosition(state, spot)) canPick = false;
+                        }
+
+                        if (canPick && !occupant) {
+                            s += '<g class="perim"' + ' onclick="chooseStartingPosition(' + i + ')"' + '>';
+                            s += `<circle cx="${px}" cy="${py}" r="${markerRadius}" fill="transparent" class="startButtonPicker" pointer-events="all"/>`;
+                            s += `<circle cx="${px}" cy="${py}" r="${markerRadius}" fill="none" stroke="#9aa4b6" stroke-width="${markerStrokeWidth}"/>`;
+                            s += `</g>`;
+                        }
+                    }
+                    s += `</g>`;
+                }
+            }
+        } else {
+            // --- wrapped: any cell is clickable to reveal its 8 starting points ---
             const pickerId = state.players[state.setupPickIndex]?.id;
             const networked = !!(isHost || hostConnection);
-            let canPick = !networked || pickerId === localPlayerId; // in local-only games, allow any local click; in networked games, only the assigned client may pick
-            const occupant = state.players.find(p => p.startIndex === i);
+            const baseCanPick = !networked || pickerId === localPlayerId;
 
-            for (const v of state.variants)  {
-                if ("onBeforeStartingPosition" in v && typeof(v.onBeforeStartingPosition) === "function")
-                    if (!v.onBeforeStartingPosition(state, spot)) canPick = false;
+            // Clickable/hoverable overlay on every cell, every copy. A cell is
+            // disabled outright (can't even be opened) if a variant vetoes a
+            // player standing there — e.g. one-player-per-cell/no-neighbors
+            // ruling out a cell that's occupied, or orthogonally adjacent to
+            // one that is — rather than only hiding the point markers once
+            // the cell is already open.
+            for (let oy = minOy; oy <= maxOy; oy++) {
+                for (let ox = minOx; ox <= maxOx; ox++) {
+                    s += `<g transform="translate(${ox * boardWidth},${oy * boardHeight})">`;
+                    for (let y = 0; y < h; y++) {
+                        for (let x = 0; x < w; x++) {
+                            const isSelected = selectedStartCell && selectedStartCell.x === x && selectedStartCell.y === y;
+                            let cellCanPick = baseCanPick;
+                            for (const v of state.variants) {
+                                if (typeof v.onBeforeStartingPosition === 'function'
+                                    && !v.onBeforeStartingPosition(state, { standX: x, standY: y })) {
+                                    cellCanPick = false;
+                                }
+                            }
+                            const clickAttr = cellCanPick ? ` onclick="handleStartCellClick(${x},${y})"` : '';
+                            s += `<rect class="startCellPicker${isSelected ? ' selected' : ''}"` +
+                                ` x="${x * cellSize}" y="${y * cellSize}" width="${cellSize}" height="${cellSize}"` +
+                                ` rx="${cellCornerRadius}" fill="transparent"` +
+                                ` pointer-events="${cellCanPick ? 'all' : 'none'}"${clickAttr}/>`;
+                        }
+                    }
+                    s += `</g>`;
+                }
             }
 
-            if (canPick && !occupant) {
-                s += '<g class="perim"' + ' onclick="chooseStartingPosition(' + i + ')"' + '>';
-                s += `<circle cx="${px}" cy="${py}" r="${markerRadius}" fill="transparent" pointer-events="all"/>`;
-                s += `<circle cx="${px}" cy="${py}" r="${markerRadius}" fill="none" stroke="#9aa4b6" stroke-width="${markerStrokeWidth}"/>`;
-                s += `</g>`;
+            // 8 point buttons around the selected cell, drawn on every copy so any visible
+            // instance of that logical cell is usable.
+            if (selectedStartCell && baseCanPick) {
+                const { x: sx, y: sy } = selectedStartCell;
+                for (let oy = minOy; oy <= maxOy; oy++) {
+                    for (let ox = minOx; ox <= maxOx; ox++) {
+                        s += `<g transform="translate(${ox * boardWidth},${oy * boardHeight})">`;
+                        for (let point = 0; point < TOTAL_POINTS; point++) {
+                            const { px, py } = pointMarkerPosition(sx, sy, point, cellSize, markerGap, markerOffset, -1);
+
+                            // Resolve to the actual target spot (for wrapped boards this
+                            // is the faced neighbor cell, not the clicked cell) so
+                            // occupancy and variant vetoes check what will really be
+                            // stored, matching chooseStartingPosition's own check.
+                            const resolved = resolveStartingSpot(state, { x: sx, y: sy, point });
+                            if (!resolved) continue;
+
+                            let canPick = true;
+                            for (const v of state.variants) {
+                                if ("onBeforeStartingPosition" in v && typeof(v.onBeforeStartingPosition) === "function")
+                                    if (!v.onBeforeStartingPosition(state, resolved)) canPick = false;
+                            }
+
+                            const occupant = isStartingSpotTaken(state, resolved);
+
+                            if (canPick && !occupant) {
+                                s += `<g class="perim" onclick="chooseStartingPosition({x:${sx},y:${sy},point:${point}})">`;
+                                s += `<circle cx="${px}" cy="${py}" r="${markerRadius}" fill="transparent" class="startButtonPicker" pointer-events="all"/>`;
+                                s += `<circle cx="${px}" cy="${py}" r="${markerRadius}" fill="none" stroke="#9aa4b6" stroke-width="${markerStrokeWidth}"/>`;
+                                s += `</g>`;
+                            }
+                        }
+                        s += `</g>`;
+                    }
+                }
             }
         }
     }
 
-    // A token's stored (x,y,point) is always the tile it's anchored to and
-    // the point it entered that tile at — so its drawn position is always
-    // that tile's LIVE exit point for that entry, recomputed from the tile's
-    // current (possibly since-rotated) paths. Rotate the tile it's standing
-    // on, and the token visibly rides along with it.
     const inProgress = state.activeResolution?.current;
     const allTokens = [...state.players, ...state.npcs];
     const bonusPreview = state.pendingBonusAction && localPlayerCanSeeBonus()
         ? state.pendingBonusAction.cell
         : null;
     const bonusPreviewShift = (2 * bonusRotationSteps) % TOTAL_POINTS;
-    for (const t of allTokens) {
-        const live = t.alive
-            ? ((inProgress && inProgress.token === t) ? inProgress : t)
-            : (t.deathRenderPosition || t.deathPosition);
-        if (!live) continue;
-        if (live.x === null || live.x === undefined) continue; // not yet placed on the perimeter
-        const cell = state.board.getCell(live.x, live.y);
-        const isBonusPreview = t.alive && cell && bonusPreview
-            && live.x === bonusPreview.x && live.y === bonusPreview.y;
-        let paths = cell?.paths;
-        if (isBonusPreview && state.pendingBonusAction.rotationPending) {
-            paths = rotateTilePaths(cell.paths, bonusRotationSteps);
+
+    for (let oy = minOy; oy <= maxOy; oy++) {
+        for (let ox = minOx; ox <= maxOx; ox++) {
+            s += `<g transform="translate(${ox * boardWidth},${oy * boardHeight})">`;
+            for (const t of allTokens) {
+                const live = t.alive
+                    ? ((inProgress && inProgress.token === t) ? inProgress : t)
+                    : (t.deathRenderPosition || t.deathPosition);
+                if (!live) continue;
+
+                // Not yet anchored to any tile (x/y is null) — draw it at its entry
+                // point instead of on a cell. Works the same on wrapped and
+                // unwrapped boards since x/y is never repurposed as a stand-in
+                // position; standX/standY/facePoint are display-only fields.
+                if (t.alive && (live.x === null || live.x === undefined)) {
+                    if (t.entryX === null || t.entryX === undefined) continue; // hasn't picked a starting spot yet
+                    if (isWrapped) {
+                        // Wrapped boards have no "outside": show the token sitting on
+                        // the cell it originally clicked (t.standX/standY), inset
+                        // toward that cell's own edge (t.facePoint). If a bonus
+                        // rotation is being previewed for this same stand cell,
+                        // preview the facePoint shifted too, matching what
+                        // rotateCell will actually do once the rotation confirms.
+                        const isStandBonusPreview = bonusPreview && state.pendingBonusAction.rotationPending
+                            && t.standX === bonusPreview.x && t.standY === bonusPreview.y;
+                        const previewFacePoint = isStandBonusPreview
+                            ? (t.facePoint + bonusPreviewShift) % TOTAL_POINTS
+                            : t.facePoint;
+                        const faceCoord = POINT_COORD[previewFacePoint];
+                        const faceSide = Math.floor(previewFacePoint / 2);
+                        const px = t.standX * cellSize + faceCoord.x * cellSize
+                            + (faceSide === 1 ? -tokenOffset : faceSide === 3 ? tokenOffset : 0);
+                        const py = t.standY * cellSize + faceCoord.y * cellSize
+                            + (faceSide === 2 ? -tokenOffset : faceSide === 0 ? tokenOffset : 0);
+                        s += `<circle cx="${px}" cy="${py}" r="${tokenRadius}" fill="${t.color}" stroke="${t.stroke}" stroke-width="${tokenStrokeWidth}"/>`;
+                        continue;
+                    }
+                    const waitCoord = POINT_COORD[t.entryPoint];
+                    const waitSide = Math.floor(t.entryPoint / 2);
+                    const px = t.entryX * cellSize + waitCoord.x * cellSize
+                        + (waitSide === 1 ? tokenOffset : waitSide === 3 ? -tokenOffset : 0);
+                    const py = t.entryY * cellSize + waitCoord.y * cellSize
+                        + (waitSide === 2 ? tokenOffset : waitSide === 0 ? -tokenOffset : 0);
+                    s += `<circle cx="${px}" cy="${py}" r="${tokenRadius}" fill="${t.color}" stroke="${t.stroke}" stroke-width="${tokenStrokeWidth}"/>`;
+                    continue;
+                }
+                if (live.x === null || live.x === undefined) continue;
+
+                const cell = state.board.getCell(live.x, live.y);
+                const isBonusPreview = t.alive && cell && bonusPreview
+                    && live.x === bonusPreview.x && live.y === bonusPreview.y;
+                let paths = cell?.paths;
+                if (isBonusPreview && state.pendingBonusAction.rotationPending) {
+                    paths = rotateTilePaths(cell.paths, bonusRotationSteps);
+                }
+                if (isBonusPreview && state.pendingBonusAction.replacementPending) {
+                    const replacement = selectedReplacementTile();
+                    if (replacement) paths = rotateTilePaths(replacement.paths, selectedRotation);
+                }
+                const entryPoint = isBonusPreview && state.pendingBonusAction.rotationPending
+                    && !state.pendingBonusAction.replacementPending
+                    ? (live.point + bonusPreviewShift) % TOTAL_POINTS
+                    : live.point;
+                const previewPosition = isBonusPreview ? { ...live, point: entryPoint } : live;
+                const previewCell = isBonusPreview ? { ...cell, paths } : cell;
+                const previewWouldEliminate = isBonusPreview && inProgress?.token === t
+                    && !getNeighboringCell(state, previewPosition, previewCell);
+                let point = !t.alive || !cell
+                    ? live.point
+                    : tileExit(previewWouldEliminate ? cell.paths : paths, previewWouldEliminate ? live.point : entryPoint);
+                if (isBonusPreview && state.pendingBonusAction.replacementPending && selectedReplacementTile()) {
+                    point = tileExit(cell.paths, live.point);
+                }
+                const coord = POINT_COORD[point];
+                const side = Math.floor(point / 2);
+
+                const outwardX = side === 1 ? tokenOffset : side === 3 ? -tokenOffset : 0;
+                const outwardY = side === 2 ? tokenOffset : side === 0 ? -tokenOffset : 0;
+                const edgeInset = 4 * scale;
+                const inwardX = side === 1 ? -edgeInset : side === 3 ? edgeInset : 0;
+                const inwardY = side === 2 ? -edgeInset : side === 0 ? edgeInset : 0;
+
+                const px = live.x * cellSize + coord.x * cellSize + (t.alive ? inwardX : outwardX);
+                const py = live.y * cellSize + coord.y * cellSize + (t.alive ? inwardY : outwardY);
+                s += `<circle cx="${px}" cy="${py}" r="${tokenRadius}" fill="${t.color}" stroke="${t.stroke}" stroke-width="${tokenStrokeWidth}"/>`;
+            }
+            s += `</g>`;
         }
-        if (isBonusPreview && state.pendingBonusAction.replacementPending) {
-            const replacement = selectedReplacementTile();
-            if (replacement) paths = rotateTilePaths(replacement.paths, selectedRotation);
-        }
-        const entryPoint = isBonusPreview && state.pendingBonusAction.rotationPending
-            && !state.pendingBonusAction.replacementPending
-            ? (live.point + bonusPreviewShift) % TOTAL_POINTS
-            : live.point;
-        const previewPosition = isBonusPreview ? { ...live, point: entryPoint } : live;
-        const previewCell = isBonusPreview ? { ...cell, paths } : cell;
-        const previewWouldEliminate = isBonusPreview && inProgress?.token === t
-            && !getNeighboringCell(state, previewPosition, previewCell);
-        let point = !t.alive || !cell
-            ? live.point
-            : tileExit(previewWouldEliminate ? cell.paths : paths, previewWouldEliminate ? live.point : entryPoint);
-        if (isBonusPreview && state.pendingBonusAction.replacementPending && selectedReplacementTile()) {
-            point = tileExit(cell.paths, live.point);
-        }
-        const coord = POINT_COORD[point];
-        const side = Math.floor(point / 2);
-        if (t.alive && !cell && t.entryX !== null && t.entryX !== undefined) {
-            const px = boardFrame + t.entryX * cellSize + coord.x * cellSize
-                + (side === 1 ? tokenOffset : side === 3 ? -tokenOffset : 0);
-            const py = boardFrame + t.entryY * cellSize + coord.y * cellSize
-                + (side === 2 ? tokenOffset : side === 0 ? -tokenOffset : 0);
-            s += `<circle cx="${px}" cy="${py}" r="${tokenRadius}" fill="${t.color}" stroke="#0a0d12" stroke-width="${tokenStrokeWidth}"/>`;
-            continue;
-        }
-        const outwardX = side === 1 ? tokenOffset : side === 3 ? -tokenOffset : 0;
-        const outwardY = side === 2 ? tokenOffset : side === 0 ? -tokenOffset : 0;
-        // Keep living tokens just inside the cell rather than centered on its edge.
-        const edgeInset = 4 * scale;
-        const inwardX = side === 1 ? -edgeInset : side === 3 ? edgeInset : 0;
-        const inwardY = side === 2 ? -edgeInset : side === 0 ? edgeInset : 0;
-        const px = boardFrame + live.x * cellSize + coord.x * cellSize
-            + (t.alive ? inwardX : outwardX);
-        const py = boardFrame + live.y * cellSize + coord.y * cellSize
-            + (t.alive ? inwardY : outwardY);
-        s += `<circle cx="${px}" cy="${py}" r="${tokenRadius}" fill="${t.color}" stroke="#0a0d12" stroke-width="${tokenStrokeWidth}"/>`;
     }
+
+    s += `</g>`; // .world (markers/tokens)
 
     svg.innerHTML = s;
 }
+
 
 let boardRenderFrame = null;
 function scheduleBoardRender() {
@@ -2151,14 +2560,102 @@ boardResizeObserver.observe(boardWrap);
 window.addEventListener('resize', scheduleBoardRender);
 
 /**
- * Chooses a perimeter position for the active player during setup.
+ * Resolves a starting-position pick into a common shape, whether it came from
+ * a perimeter index (non-wrapped board) or an {x,y,point} object identifying
+ * an arbitrary cell edge (wrapped board, no fixed perimeter).
  *
- * @param {number} perimIndex - Index into the board perimeter list.
+ * @param {object} state - Active game state.
+ * @param {number|{x:number,y:number,point:number}} pick - Perimeter index or wrapped pick.
+ * @returns {{x:number,y:number,point:number,standX:number,standY:number,facePoint:number,perimIndex:number|null}|null}
+ *   x/y/point is the entry cell + the point the token enters it through (this
+ *   becomes the token's real anchor once it steps on). standX/standY/facePoint
+ *   is where to draw the token while it's still waiting to enter — display-only,
+ *   never used for game logic.
  */
-// Called by clicking a perimeter marker during setup to choose a starting spot.
-function chooseStartingPosition(perimIndex) {
+function resolveStartingSpot(state, pick) {
+    if (typeof pick === 'number') {
+        if (!Number.isInteger(pick) || pick < 0 || pick >= state.perimeter.length) return null;
+        const spot = state.perimeter[pick];
+        return { x: spot.x, y: spot.y, point: spot.point, standX: spot.outsideX, standY: spot.outsideY, facePoint: spot.point, perimIndex: pick };
+    }
+    if (pick && typeof pick === 'object') {
+        const { x, y, point } = pick;
+        if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(point)) return null;
+        if (x < 0 || x >= state.board.width || y < 0 || y >= state.board.height) return null;
+        if (point < 0 || point >= TOTAL_POINTS) return null;
+
+        if (state.board.wrap) {
+            // Player stands on the cell they clicked (standX/Y — display-only,
+            // matches the inset marker they picked, at edge `facePoint`). The
+            // first tile they need isn't that cell itself, it's the cell they're
+            // facing through the picked edge — the wrapped neighbor across that
+            // side, entered through the mirrored point on its edge (same
+            // convention normal tile-to-tile crossing uses). `point` becomes the
+            // token's real entryPoint once it enters that neighbor cell;
+            // `facePoint` refers to the clicked cell's own edge, kept around
+            // purely so the waiting token can be drawn on the right cell.
+            const side = Math.floor(point / 2);
+            const p = point % 2;
+            const nb = neighborAcrossSide(state, x, y, side);
+            if (!nb) return null; // shouldn't happen on a wrapped board
+            const targetPoint = nb.side * 2 + (1 - p);
+            return { x: nb.x, y: nb.y, point: targetPoint, standX: x, standY: y, facePoint: point, perimIndex: null };
+        }
+
+        const outside = outsideBoardPosition(x, y, point);
+        return { x, y, point, standX: outside.x, standY: outside.y, facePoint: point, perimIndex: null };
+    }
+    return null;
+}
+
+/**
+ * True when some player already holds this exact (cell, entry point). Works
+ * uniformly for perimeter and wrapped picks since resolveStartingSpot reduces
+ * both to the same shape.
+ *
+ * @param {object} state - Active game state.
+ * @param {{x:number,y:number,point:number}} spot - Resolved starting spot.
+ * @returns {boolean} True if a player already occupies this spot.
+ */
+function isStartingSpotTaken(state, spot) {
+    return state.players.some(p => p.entryX === spot.x && p.entryY === spot.y && p.point === spot.point);
+}
+
+/**
+ * Applies a resolved starting spot to a player and advances setup.
+ *
+ * @param {object} state - Active game state.
+ * @param {object} player - Player being placed.
+ * @param {{x:number,y:number,point:number,standX:number,standY:number,facePoint:number,perimIndex:number|null}} spot - Resolved starting spot.
+ */
+function applyStartingPick(state, player, spot) {
+    // Not on the board yet — x/y/point stay null until the token genuinely enters.
+    player.x = null; player.y = null; player.point = null;
+    player.entryX = spot.x; player.entryY = spot.y; player.entryPoint = spot.point;
+    player.startIndex = spot.perimIndex;
+    player.standX = spot.standX; player.standY = spot.standY; player.facePoint = spot.facePoint;
+
+    state.setupPickIndex++;
+    if (state.setupPickIndex >= state.players.length) {
+        state.selectingStartingPositions = false;
+        state.currentPlayerIndex = 0;
+    }
+}
+
+/**
+ * Chooses a starting position for the current setup player.
+ *
+ * @param {number|{x:number,y:number,point:number}} pick - Perimeter index (non-wrapped board)
+ *   or an {x,y,point} object naming an arbitrary cell edge (wrapped board).
+ */
+// Called by clicking a perimeter marker (non-wrapped) or a cell's point button
+// (wrapped) during setup to choose a starting spot.
+function chooseStartingPosition(pick) {
     if (!state || !state.selectingStartingPositions) return;
-    if (perimIndex < 0 || perimIndex >= state.perimeter.length) return;
+
+    const spot = resolveStartingSpot(state, pick);
+    if (!spot) return;
+
     const currentPick = state.setupPickIndex;
     if (currentPick >= state.players.length) return;
     const player = state.players[currentPick];
@@ -2168,7 +2665,9 @@ function chooseStartingPosition(perimIndex) {
     if (hostConnection && !isHost) {
         // Only the player whose id matches the current picker may attempt to choose.
         if (localPlayerId !== player.id) return;
-        sendAction({ type: 'chooseStart', playerId: localPlayerId, perimIndex });
+        sendAction(typeof pick === 'number'
+            ? { type: 'chooseStart', playerId: localPlayerId, perimIndex: pick }
+            : { type: 'chooseStart', playerId: localPlayerId, spot: pick });
         return;
     }
 
@@ -2176,23 +2675,18 @@ function chooseStartingPosition(perimIndex) {
     const networked = !!(isHost || hostConnection);
     if (networked && localPlayerId !== player.id) return; // in local-only games, allow the UI to pick for any player
 
-    const spot = state.perimeter[perimIndex];
-
     // Ensure spot isn't already taken
-    if (state.players.find(p => p.startIndex === perimIndex)) return;
+    if (isStartingSpotTaken(state, spot)) return;
 
-    // Assign chosen coordinates and the matching entry point for the chosen perimeter slot.
-    player.x = spot.outsideX; player.y = spot.outsideY; player.point = spot.point;
-    player.entryX = spot.x; player.entryY = spot.y; player.startIndex = perimIndex;
-
-    // Advance to the next player
-    state.setupPickIndex++;
-
-    // If all players have chosen, finish setup and set turn to starting player
-    if (state.setupPickIndex >= state.players.length) {
-        state.selectingStartingPositions = false;
-        state.currentPlayerIndex = 0;
+    // Verify no active variant vetoes this spot
+    for (const v of state.variants) {
+        if ("onBeforeStartingPosition" in v && typeof v.onBeforeStartingPosition === "function") {
+            if (!v.onBeforeStartingPosition(state, spot)) return;
+        }
     }
+
+    selectedStartCell = null;
+    applyStartingPick(state, player, spot);
     render();
     broadcastState();
 }
@@ -2481,6 +2975,10 @@ for (const id of VARIANT_CHECKBOX_IDS) {
 vNoNeighborsCheckbox.addEventListener("click", function(event) {
     syncNoNeighborsDependency();
     saveVariantCheckboxes();
+});
+
+document.getElementById('vWrap').addEventListener("click", function(event) {
+    document.getElementById('numNinjas').disabled = !event.target.checked;
 });
 
 restoreVariantCheckboxes();
